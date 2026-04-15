@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   useJournalEntries,
   useCreateJournalEntry,
@@ -25,6 +26,7 @@ const TYPE_COLORS = {
 
 function AddEntryForm({ watchlistId, onClose }) {
   const [entryType, setEntryType] = useState("note");
+  const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const createEntry = useCreateJournalEntry(watchlistId);
 
@@ -33,9 +35,14 @@ function AddEntryForm({ watchlistId, onClose }) {
     if (!content.trim()) return;
 
     createEntry.mutate(
-      { entry_type: entryType, content: content.trim() },
+      {
+        entry_type: entryType,
+        title: title.trim() || null,
+        content: content.trim(),
+      },
       {
         onSuccess: () => {
+          setTitle("");
           setContent("");
           onClose();
         },
@@ -57,13 +64,20 @@ function AddEntryForm({ watchlistId, onClose }) {
             </option>
           ))}
         </select>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Title (optional)"
+          className="flex-1 px-3 py-2 border-2 border-ink bg-warm-white text-sm"
+        />
       </div>
       <textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
         placeholder="Write your notes here... (supports Markdown)"
-        rows={4}
-        className="w-full px-3 py-2 border-2 border-ink bg-warm-white text-sm font-serif resize-none"
+        rows={6}
+        className="w-full px-3 py-2 border-2 border-ink bg-warm-white text-sm font-serif resize-y"
       />
       <div className="flex gap-2">
         <button
@@ -144,6 +158,11 @@ export default function JournalEntries({ watchlistId }) {
                   >
                     {entry.entry_type}
                   </span>
+                  {entry.title && (
+                    <span className="text-sm font-medium text-dark-brown">
+                      {entry.title}
+                    </span>
+                  )}
                   <span className="text-xs text-light-brown">
                     {formatDate(entry.created_at)}
                   </span>
@@ -156,9 +175,9 @@ export default function JournalEntries({ watchlistId }) {
                   ×
                 </button>
               </div>
-              <p className="text-sm text-ink font-serif whitespace-pre-wrap">
-                {entry.content}
-              </p>
+              <div className="text-sm text-ink font-serif prose prose-sm max-w-none prose-headings:text-dark-brown prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0">
+                <ReactMarkdown>{entry.content}</ReactMarkdown>
+              </div>
             </div>
           ))}
         </div>
