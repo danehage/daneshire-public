@@ -6,6 +6,7 @@ import AddTickerForm from "../components/AddTickerForm";
 const TABS = [
   { key: null, label: "All" },
   { key: "watching", label: "Watching" },
+  { key: "owned", label: "Owned" },
   { key: "position_open", label: "Open" },
   { key: "closed", label: "Closed" },
 ];

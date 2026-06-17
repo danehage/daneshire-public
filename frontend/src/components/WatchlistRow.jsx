@@ -8,12 +8,14 @@ import TargetsAndJournal from "./TargetsAndJournal";
 
 const STATUS_LABELS = {
   watching: "Watching",
+  owned: "Owned",
   position_open: "Open",
   closed: "Closed",
 };
 
 const STATUS_COLORS = {
   watching: "bg-warm-white text-dark-brown border-ink",
+  owned: "bg-accent text-warm-white border-ink",
   position_open: "bg-success text-warm-white border-ink",
   closed: "bg-light-brown text-warm-white border-ink",
 };
@@ -81,6 +83,7 @@ export default function WatchlistRow({ item, dragHandleProps }) {
               className="text-xs px-2 py-1 border-2 border-ink bg-warm-white uppercase tracking-wide"
             >
               <option value="watching">Watching</option>
+              <option value="owned">Owned</option>
               <option value="position_open">Open</option>
               <option value="closed">Closed</option>
             </select>
