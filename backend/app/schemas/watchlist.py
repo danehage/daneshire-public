@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class WatchlistItemCreate(BaseModel):
     ticker: str = Field(..., max_length=10)
-    status: str = Field(default="watching", pattern="^(watching|position_open|closed)$")
+    status: str = Field(default="watching", pattern="^(watching|position_open|closed|owned)$")
     position_type: Optional[str] = Field(
         default=None, pattern="^(long|short|cash_secured_put|covered_call)$"
     )
@@ -22,7 +22,7 @@ class WatchlistItemCreate(BaseModel):
 class WatchlistItemUpdate(BaseModel):
     ticker: Optional[str] = Field(default=None, max_length=10)
     status: Optional[str] = Field(
-        default=None, pattern="^(watching|position_open|closed)$"
+        default=None, pattern="^(watching|position_open|closed|owned)$"
     )
     position_type: Optional[str] = Field(
         default=None, pattern="^(long|short|cash_secured_put|covered_call)$"

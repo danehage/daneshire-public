@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 @router.get("", response_model=list[WatchlistItemResponse])
 async def list_watchlist(
-    status: Optional[str] = Query(default=None, pattern="^(watching|position_open|closed)$"),
+    status: Optional[str] = Query(default=None, pattern="^(watching|position_open|closed|owned)$"),
     db: AsyncSession = Depends(get_db),
 ):
     """Get all watchlist items, optionally filtered by status."""

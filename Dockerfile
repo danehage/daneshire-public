@@ -18,6 +18,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# pg_dump is needed for the nightly backup job. Pin it to v17 to match the
+# Neon production server (PG 17.10) — pg_dump refuses to dump from a newer
+# server, and Debian bookworm's default postgresql-client is only v15.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo $VERSION_CODENAME)-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
