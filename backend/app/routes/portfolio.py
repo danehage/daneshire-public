@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.portfolio import Account, Holding, PortfolioSnapshot, Trade
+from app.models.watchlist import WatchlistItem
 from app.routes.dependencies import get_portfolio_engine, get_vision_parser
 from app.schemas.portfolio import (
     AccountResponse,
@@ -206,11 +207,48 @@ async def commit_snapshot(
     db.add(snapshot)
     await db.flush()
 
+    # Upsert a watchlist item for each unique ticker and promote status to 'owned'.
+    # Build ticker → watchlist_item_id map for populating holdings.watchlist_item_id.
+    unique_tickers = {pos.ticker.upper() for pos in body.positions}
+    watchlist_item_map: dict[str, object] = {}
+    max_order_result = await db.execute(
+        select(WatchlistItem.sort_order)
+        .order_by(WatchlistItem.sort_order.desc())
+        .limit(1)
+    )
+    max_order = max_order_result.scalar() or 0
+    order_counter = max_order
+
+    for ticker in unique_tickers:
+        existing_result = await db.execute(
+            select(WatchlistItem).where(
+                WatchlistItem.ticker == ticker
+            )
+        )
+        wl_item = existing_result.scalar_one_or_none()
+        if wl_item is not None:
+            wl_item.status = "owned"
+            wl_item.updated_at = datetime.now(timezone.utc)
+        else:
+            order_counter += 1
+            wl_item = WatchlistItem(
+                ticker=ticker,
+                status="owned",
+                sort_order=order_counter,
+                tags=[],
+            )
+            db.add(wl_item)
+        await db.flush()
+        watchlist_item_map[ticker] = wl_item
+
     for pos in body.positions:
+        ticker_upper = pos.ticker.upper()
+        wl_item = watchlist_item_map.get(ticker_upper)
         holding = Holding(
             snapshot_id=snapshot.id,
+            watchlist_item_id=wl_item.id if wl_item else None,
             instrument_type=pos.instrument_type,
-            ticker=pos.ticker.upper(),
+            ticker=ticker_upper,
             qty=pos.qty,
             avg_cost=pos.avg_cost,
             market_value_at_snapshot=pos.market_value_at_snapshot,

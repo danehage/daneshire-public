@@ -20,7 +20,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.portfolio import Holding, PortfolioSnapshot, Trade
+from app.models.portfolio import Account, Holding, PortfolioSnapshot, Trade
+from app.models.watchlist import WatchlistItem
 from app.schemas.portfolio import PositionDiff, SnapshotDiffResponse, TradeCommit
 from app.schemas.portfolio_parsing import ParsedPortfolioSnapshot
 from app.services.market import MarketData, MarketDataError
@@ -295,7 +296,41 @@ class PortfolioEngine:
         await self.db.commit()
         await self.db.refresh(trade)
 
+        # Demotion: if this sell brings the ticker's qty to 0 across ALL accounts,
+        # demote the watchlist item from 'owned' to 'closed'.
+        if parsed.side == "sell":
+            await self._maybe_demote_watchlist_item(parsed.ticker.upper())
+
         return TradeResult(trade_row=trade, warnings=warnings)
+
+    async def _maybe_demote_watchlist_item(self, ticker: str) -> None:
+        """Demote the watchlist item for ``ticker`` from 'owned' to 'closed'
+        when the position is flat across every account."""
+        all_accounts_result = await self.db.execute(select(Account.id))
+        all_account_ids = list(all_accounts_result.scalars().all())
+
+        still_held = False
+        for aid in all_account_ids:
+            holdings = await self.current_holdings(aid)
+            for h in holdings:
+                if h.ticker.upper() == ticker:
+                    still_held = True
+                    break
+            if still_held:
+                break
+
+        if not still_held:
+            wl_result = await self.db.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.ticker == ticker,
+                    WatchlistItem.status == "owned",
+                )
+            )
+            wl_item = wl_result.scalar_one_or_none()
+            if wl_item is not None:
+                wl_item.status = "closed"
+                wl_item.updated_at = datetime.now(timezone.utc)
+                await self.db.commit()
 
     async def portfolio_value(self, account_id: UUID) -> PortfolioValue:
         """current_holdings + live FMP marks + cash + totals.

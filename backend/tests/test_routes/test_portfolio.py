@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 
 from app.main import app
 from app.models.portfolio import Account, PortfolioSnapshot, Holding, Trade
+from app.models.watchlist import WatchlistItem
 from app.routes.dependencies import get_vision_parser
 from app.schemas.portfolio_parsing import (
     ParsedPortfolioSnapshot,
@@ -30,11 +31,12 @@ from app.services.vision_parser import (
 
 @pytest.fixture(autouse=True)
 async def cleanup_portfolio(db_session: AsyncSession):
-    """Clean up portfolio tables before and after each test."""
+    """Clean up portfolio and watchlist tables before and after each test."""
     await db_session.execute(delete(Trade))
     await db_session.execute(delete(Holding))
     await db_session.execute(delete(PortfolioSnapshot))
     await db_session.execute(delete(Account))
+    await db_session.execute(delete(WatchlistItem))
     await db_session.commit()
 
     yield
@@ -43,6 +45,7 @@ async def cleanup_portfolio(db_session: AsyncSession):
     await db_session.execute(delete(Holding))
     await db_session.execute(delete(PortfolioSnapshot))
     await db_session.execute(delete(Account))
+    await db_session.execute(delete(WatchlistItem))
     await db_session.commit()
 
 
@@ -1074,3 +1077,205 @@ async def test_parse_trade_option_fields_round_trip(
         assert committed["multiplier"] == 100
     finally:
         app.dependency_overrides.pop(get_vision_parser, None)
+
+
+# ---------------------------------------------------------------------------
+# Issue #10 — Watchlist upsert (snapshots/commit) + demotion (trades/commit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_snapshot_creates_watchlist_item(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Committing a snapshot with a new ticker creates a watchlist item with status 'owned'."""
+    payload = {
+        "account_name": "Taxable",
+        "captured_at": "2026-06-17T12:00:00Z",
+        "positions": [
+            {"instrument_type": "equity", "ticker": "aapl", "qty": "10", "avg_cost": "180.00"},
+        ],
+    }
+    response = await client.post("/api/portfolio/snapshots/commit", json=payload)
+    assert response.status_code == 201
+
+    result = await db_session.execute(
+        select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+    )
+    wl_item = result.scalar_one_or_none()
+    assert wl_item is not None
+    assert wl_item.status == "owned"
+
+
+@pytest.mark.asyncio
+async def test_commit_snapshot_promotes_watching_to_owned(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Committing a snapshot with an existing 'watching' ticker promotes status to 'owned'."""
+    wl_item = WatchlistItem(ticker="MSFT", status="watching", sort_order=1, tags=[])
+    db_session.add(wl_item)
+    await db_session.commit()
+
+    payload = {
+        "account_name": "Taxable",
+        "captured_at": "2026-06-17T12:00:00Z",
+        "positions": [
+            {"instrument_type": "equity", "ticker": "MSFT", "qty": "5", "avg_cost": "400.00"},
+        ],
+    }
+    response = await client.post("/api/portfolio/snapshots/commit", json=payload)
+    assert response.status_code == 201
+    assert wl_item.status == "owned"
+
+    all_result = await db_session.execute(
+        select(WatchlistItem).where(WatchlistItem.ticker == "MSFT")
+    )
+    assert len(all_result.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_snapshot_promotes_position_open_to_owned(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Committing a snapshot with an existing 'position_open' ticker promotes it to 'owned'."""
+    wl_item = WatchlistItem(ticker="NVDA", status="position_open", sort_order=1, tags=[])
+    db_session.add(wl_item)
+    await db_session.commit()
+
+    payload = {
+        "account_name": "Taxable",
+        "captured_at": "2026-06-17T12:00:00Z",
+        "positions": [
+            {"instrument_type": "equity", "ticker": "NVDA", "qty": "3", "avg_cost": "900.00"},
+        ],
+    }
+    response = await client.post("/api/portfolio/snapshots/commit", json=payload)
+    assert response.status_code == 201
+    assert wl_item.status == "owned"
+
+
+@pytest.mark.asyncio
+async def test_commit_snapshot_idempotent_no_duplicate_watchlist_item(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Re-committing the same ticker does not create duplicate watchlist rows."""
+    payload = {
+        "account_name": "Taxable",
+        "captured_at": "2026-06-17T12:00:00Z",
+        "positions": [
+            {"instrument_type": "equity", "ticker": "AAPL", "qty": "10", "avg_cost": "180.00"},
+        ],
+    }
+    await client.post("/api/portfolio/snapshots/commit", json=payload)
+    later_payload = dict(payload, captured_at="2026-06-18T12:00:00Z")
+    await client.post("/api/portfolio/snapshots/commit", json=later_payload)
+
+    result = await db_session.execute(
+        select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+    )
+    assert len(result.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_snapshot_holdings_have_watchlist_item_id(
+    client: AsyncClient,
+):
+    """Holdings committed via snapshot have watchlist_item_id populated."""
+    payload = {
+        "account_name": "Taxable",
+        "captured_at": "2026-06-17T12:00:00Z",
+        "positions": [
+            {"instrument_type": "equity", "ticker": "AAPL", "qty": "10", "avg_cost": "180.00"},
+        ],
+    }
+    response = await client.post("/api/portfolio/snapshots/commit", json=payload)
+    assert response.status_code == 201
+    holding = response.json()["holdings"][0]
+    assert holding["watchlist_item_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_commit_trade_full_close_demotes_to_closed(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A sell that closes the last account's position demotes the watchlist item to 'closed'."""
+    account_id = await _setup_account_with_snapshot(client)
+
+    sell_all = {
+        "account_id": account_id,
+        "ticker": "AAPL",
+        "instrument_type": "equity",
+        "side": "sell",
+        "qty": "10",
+        "price": "200.00",
+        "executed_at": "2026-06-17T14:00:00Z",
+    }
+    response = await client.post("/api/portfolio/trades/commit", json=sell_all)
+    assert response.status_code == 201
+
+    result = await db_session.execute(
+        select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+    )
+    wl_item = result.scalar_one_or_none()
+    assert wl_item is not None
+    assert wl_item.status == "closed"
+
+
+@pytest.mark.asyncio
+async def test_commit_trade_partial_close_stays_owned(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A partial sell leaves the watchlist item as 'owned'."""
+    account_id = await _setup_account_with_snapshot(client)
+
+    partial_sell = {
+        "account_id": account_id,
+        "ticker": "AAPL",
+        "instrument_type": "equity",
+        "side": "sell",
+        "qty": "5",
+        "price": "200.00",
+        "executed_at": "2026-06-17T14:00:00Z",
+    }
+    response = await client.post("/api/portfolio/trades/commit", json=partial_sell)
+    assert response.status_code == 201
+
+    result = await db_session.execute(
+        select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+    )
+    wl_item = result.scalar_one_or_none()
+    assert wl_item is not None
+    assert wl_item.status == "owned"
+
+
+@pytest.mark.asyncio
+async def test_commit_trade_two_accounts_partial_close_stays_owned(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Closing one account's AAPL position keeps 'owned' while the other account still holds it."""
+    account_id = await _setup_account_with_snapshot(client)
+
+    roth_payload = dict(SNAPSHOT_PAYLOAD, account_name="Roth IRA")
+    await client.post("/api/portfolio/snapshots/commit", json=roth_payload)
+    accounts = (await client.get("/api/portfolio/accounts")).json()
+    roth = next(a for a in accounts if a["name"] == "Roth IRA")
+    roth_id = roth["id"]
+
+    sell_roth = {
+        "account_id": roth_id,
+        "ticker": "AAPL",
+        "instrument_type": "equity",
+        "side": "sell",
+        "qty": "10",
+        "price": "200.00",
+        "executed_at": "2026-06-17T14:00:00Z",
+    }
+    response = await client.post("/api/portfolio/trades/commit", json=sell_roth)
+    assert response.status_code == 201
+
+    result = await db_session.execute(
+        select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+    )
+    wl_item = result.scalar_one_or_none()
+    assert wl_item is not None
+    assert wl_item.status == "owned"

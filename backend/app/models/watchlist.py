@@ -59,7 +59,7 @@ class WatchlistItem(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('watching', 'position_open', 'closed')",
+            "status IN ('watching', 'position_open', 'closed', 'owned')",
             name="valid_status",
         ),
         Index("idx_watchlist_status", "status"),
