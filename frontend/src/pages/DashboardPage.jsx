@@ -4,15 +4,8 @@ import { useDashboardSummary } from "../hooks/useDashboard";
 import { useJournalSearch } from "../hooks/useJournal";
 import { usePortfolio } from "../hooks/usePortfolio";
 import PortfolioSummaryCard from "../components/portfolio/PortfolioSummaryCard";
-
-const ENTRY_TYPE_COLORS = {
-  thesis: "bg-accent text-warm-white",
-  note: "bg-light-brown text-warm-white",
-  entry: "bg-success text-warm-white",
-  exit: "bg-error text-warm-white",
-  adjustment: "bg-warning text-warm-white",
-  review: "bg-mid-brown text-warm-white",
-};
+import Card from "../components/Card";
+import Badge, { ENTRY_TYPE_TONES } from "../components/Badge";
 
 function formatDate(dateString) {
   const date = new Date(dateString);
@@ -38,7 +31,7 @@ function formatDate(dateString) {
 
 function SummaryCard({ title, value, subtitle, linkTo, linkLabel }) {
   return (
-    <div className="border-2 border-ink shadow-hard-sm sm:shadow-hard bg-warm-white p-4 sm:p-6">
+    <Card shadow="responsive" className="p-4 sm:p-6">
       <h3 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
         {title}
       </h3>
@@ -52,7 +45,7 @@ function SummaryCard({ title, value, subtitle, linkTo, linkLabel }) {
           {linkLabel} →
         </Link>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -73,13 +66,9 @@ function JournalEntryRow({ entry }) {
             >
               {entry.ticker}
             </Link>
-            <span
-              className={`text-xs px-2 py-0.5 border border-ink uppercase tracking-wide ${
-                ENTRY_TYPE_COLORS[entry.entry_type] || "bg-light-brown text-warm-white"
-              }`}
-            >
+            <Badge tone={ENTRY_TYPE_TONES[entry.entry_type] || "muted"}>
               {entry.entry_type}
-            </span>
+            </Badge>
           </div>
           <p className="text-sm text-mid-brown line-clamp-2">{truncatedContent}</p>
         </div>
@@ -136,7 +125,7 @@ function JournalSearch() {
 
   return (
     <div className="relative" ref={containerRef}>
-      <div className="border-2 border-ink shadow-hard-sm sm:shadow-hard bg-warm-white">
+      <Card shadow="responsive">
         <input
           type="text"
           value={query}
@@ -145,10 +134,10 @@ function JournalSearch() {
           placeholder="Search journal entries..."
           className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base bg-transparent text-ink placeholder-light-brown focus:outline-none"
         />
-      </div>
+      </Card>
 
       {showResults && (
-        <div className="absolute z-10 w-full mt-2 border-2 border-ink shadow-hard bg-warm-white max-h-80 overflow-y-auto">
+        <Card className="absolute z-10 w-full mt-2 max-h-80 overflow-y-auto">
           {isLoading && (
             <div className="py-4 text-center text-mid-brown">Searching...</div>
           )}
@@ -178,7 +167,7 @@ function JournalSearch() {
               ))}
             </>
           )}
-        </div>
+        </Card>
       )}
     </div>
   );
@@ -198,13 +187,9 @@ function SearchResultRow({ entry }) {
             <span className="font-serif text-lg text-ink hover:text-accent">
               {entry.ticker}
             </span>
-            <span
-              className={`text-xs px-2 py-0.5 border border-ink uppercase tracking-wide ${
-                ENTRY_TYPE_COLORS[entry.entry_type] || "bg-light-brown text-warm-white"
-              }`}
-            >
+            <Badge tone={ENTRY_TYPE_TONES[entry.entry_type] || "muted"}>
               {entry.entry_type}
-            </span>
+            </Badge>
           </div>
           <p className="text-sm text-mid-brown line-clamp-2">{truncatedContent}</p>
         </div>
@@ -303,7 +288,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        <div className="border-2 border-ink shadow-hard bg-warm-white">
+        <Card>
           {recent_journal.length === 0 ? (
             <div className="py-12 text-center text-mid-brown">
               No journal entries yet. Add some notes to your watchlist items!
@@ -313,44 +298,35 @@ export default function DashboardPage() {
               <JournalEntryRow key={entry.id} entry={entry} />
             ))
           )}
-        </div>
+        </Card>
       </div>
 
       {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Link
-          to="/scanner"
-          className="border-2 border-ink shadow-hard bg-warm-white p-6 hover:bg-cream transition-colors group"
-        >
+        <Card as={Link} to="/scanner" className="p-6 hover:bg-cream transition-colors group">
           <h3 className="font-serif text-lg text-ink group-hover:text-accent mb-1">
             Run Scanner
           </h3>
           <p className="text-sm text-mid-brown">
             Find stocks meeting your technical criteria
           </p>
-        </Link>
-        <Link
-          to="/alerts"
-          className="border-2 border-ink shadow-hard bg-warm-white p-6 hover:bg-cream transition-colors group"
-        >
+        </Card>
+        <Card as={Link} to="/alerts" className="p-6 hover:bg-cream transition-colors group">
           <h3 className="font-serif text-lg text-ink group-hover:text-accent mb-1">
             Create Alert
           </h3>
           <p className="text-sm text-mid-brown">
             Get notified when conditions are met
           </p>
-        </Link>
-        <Link
-          to="/watchlist"
-          className="border-2 border-ink shadow-hard bg-warm-white p-6 hover:bg-cream transition-colors group"
-        >
+        </Card>
+        <Card as={Link} to="/watchlist" className="p-6 hover:bg-cream transition-colors group">
           <h3 className="font-serif text-lg text-ink group-hover:text-accent mb-1">
             Add Ticker
           </h3>
           <p className="text-sm text-mid-brown">
             Track a new stock on your watchlist
           </p>
-        </Link>
+        </Card>
       </div>
     </div>
   );

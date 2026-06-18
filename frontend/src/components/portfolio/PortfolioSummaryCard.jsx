@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import Card from "../Card";
 
 function freshnessLabel(lastSnapshotAt) {
   if (!lastSnapshotAt) return null;
@@ -19,7 +20,7 @@ function fmt(value) {
 export default function PortfolioSummaryCard({ portfolio }) {
   if (!portfolio || portfolio.account_id == null) {
     return (
-      <div className="border-2 border-ink shadow-hard-sm sm:shadow-hard bg-warm-white p-4 sm:p-6">
+      <Card shadow="responsive" className="p-4 sm:p-6">
         <h3 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
           Portfolio
         </h3>
@@ -29,7 +30,7 @@ export default function PortfolioSummaryCard({ portfolio }) {
         >
           Upload your first snapshot →
         </Link>
-      </div>
+      </Card>
     );
   }
 
@@ -45,7 +46,7 @@ export default function PortfolioSummaryCard({ portfolio }) {
       : null;
 
   return (
-    <div className="border-2 border-ink shadow-hard-sm sm:shadow-hard bg-warm-white p-4 sm:p-6">
+    <Card shadow="responsive" className="p-4 sm:p-6">
       <h3 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
         Portfolio
       </h3>
@@ -55,7 +56,7 @@ export default function PortfolioSummaryCard({ portfolio }) {
       {dayChangeNum != null && (
         <p
           className={`text-sm font-mono mb-1 ${
-            isPositive ? "text-green-700" : isNegative ? "text-red-700" : "text-mid-brown"
+            isPositive ? "text-gain" : isNegative ? "text-loss" : "text-mid-brown"
           }`}
         >
           {dayChangeNum >= 0 ? "+" : ""}${fmt(day_change)}
@@ -78,6 +79,6 @@ export default function PortfolioSummaryCard({ portfolio }) {
       >
         View portfolio →
       </Link>
-    </div>
+    </Card>
   );
 }

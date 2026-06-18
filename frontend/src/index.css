@@ -23,6 +23,12 @@
     --error: #c13a3a;
     --warning: #d97706;
     --success: #2d6a4f;
+
+    /* P/L — gain/loss is its own semantic, distinct from success/error
+       feedback so the two can be tuned independently (e.g. colorblind modes).
+       Tuned for AA contrast on the cream/warm-white grounds. */
+    --gain: #1f6b47;
+    --loss: #b3322f;
   }
 
   body {
