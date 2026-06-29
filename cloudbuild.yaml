@@ -27,6 +27,16 @@ steps:
       - 'push'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest'
 
+  # Apply database migrations BEFORE deploying new code, so the schema is ready
+  # by the time the new revision serves traffic. Runs in the freshly-built image
+  # (exact deps + migration files); NEON_DATABASE_URL is injected from Secret
+  # Manager. If this step fails, the build stops and the old revision keeps
+  # serving — the deploy below never runs.
+  - name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
+    entrypoint: 'alembic'
+    args: ['upgrade', 'head']
+    secretEnv: ['NEON_DATABASE_URL']
+
   # Deploy to Cloud Run
   # NOTE: Secrets must be created in Secret Manager first (see DEPLOY.md)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -58,6 +68,11 @@ steps:
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest'
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/neon-database-url/versions/latest
+      env: 'NEON_DATABASE_URL'
 
 options:
   logging: CLOUD_LOGGING_ONLY
