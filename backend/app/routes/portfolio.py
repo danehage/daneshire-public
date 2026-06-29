@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -183,6 +184,26 @@ async def commit_snapshot(
     db: AsyncSession = Depends(get_db),
 ):
     """Persist a portfolio snapshot and its holdings. Lazily creates the Account if unknown."""
+    try:
+        return await _persist_snapshot(body, db)
+    except IntegrityError as exc:
+        # A DB constraint rejected the write (e.g. prod schema behind on
+        # migrations — the 'owned' watchlist status). Surface a readable 409
+        # instead of a blank 500 so the cause is obvious from the UI.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Snapshot rejected by a database constraint. The production "
+                "schema may be behind on migrations (run `alembic upgrade head`). "
+                f"Underlying error: {exc.orig}"
+            ),
+        ) from exc
+
+
+async def _persist_snapshot(
+    body: PortfolioSnapshotCommit, db: AsyncSession
+) -> PortfolioSnapshot:
     acc_result = await db.execute(
         select(Account).where(Account.name == body.account_name)
     )
@@ -221,11 +242,13 @@ async def commit_snapshot(
 
     for ticker in unique_tickers:
         existing_result = await db.execute(
-            select(WatchlistItem).where(
-                WatchlistItem.ticker == ticker
-            )
+            select(WatchlistItem)
+            .where(WatchlistItem.ticker == ticker)
+            .order_by(WatchlistItem.created_at)
         )
-        wl_item = existing_result.scalar_one_or_none()
+        # `.first()`, not `.scalar_one_or_none()`: ticker has no unique
+        # constraint, so duplicates are possible and must not blow up here.
+        wl_item = existing_result.scalars().first()
         if wl_item is not None:
             wl_item.status = "owned"
             wl_item.updated_at = datetime.now(timezone.utc)
