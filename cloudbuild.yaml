@@ -32,9 +32,13 @@ steps:
   # (exact deps + migration files); NEON_DATABASE_URL is injected from Secret
   # Manager. If this step fails, the build stops and the old revision keeps
   # serving — the deploy below never runs.
+  #
+  # `cd /app` is required: Cloud Build overrides the image's WORKDIR and runs
+  # the step from /workspace, where alembic can't find alembic.ini (and the
+  # `app` package isn't importable). Running from /app fixes both.
   - name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
-    entrypoint: 'alembic'
-    args: ['upgrade', 'head']
+    entrypoint: 'sh'
+    args: ['-c', 'cd /app && alembic upgrade head']
     secretEnv: ['NEON_DATABASE_URL']
 
   # Deploy to Cloud Run
