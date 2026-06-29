@@ -52,6 +52,27 @@ export default function SnapshotReviewPane({ diffData, onCommit, onCancel }) {
     (d) => d.status === "removed"
   );
 
+  // Flag a likely parse error where avg_cost is off by a factor of quantity
+  // (the vision model occasionally divides cost basis by shares). For equities,
+  // avg_cost should be the same order of magnitude as per-share market value
+  // (market_value / qty); a >10x gap almost always means a bad parse, not a
+  // real gain/loss. Non-blocking — it just warns.
+  const isAvgCostSuspicious = (pos) => {
+    if (pos.instrument_type !== "equity") return false;
+    const qty = Number(pos.qty);
+    const avg = Number(pos.avg_cost);
+    const mv = Number(pos.market_value);
+    if (![qty, avg, mv].every(Number.isFinite) || qty === 0 || avg <= 0) return false;
+    const perShare = Math.abs(mv / qty);
+    if (perShare <= 0) return false;
+    const ratio = perShare / avg;
+    return ratio > 10 || ratio < 0.1;
+  };
+
+  const suspiciousTickers = positions
+    .filter(isAvgCostSuspicious)
+    .map((p) => p.ticker);
+
   const handlePositionChange = (idx, field, value) => {
     setPositions((prev) => {
       const next = [...prev];
@@ -239,7 +260,16 @@ export default function SnapshotReviewPane({ diffData, onCommit, onCancel }) {
                       step="any"
                       value={pos.avg_cost ?? ""}
                       onChange={(e) => handlePositionChange(idx, "avg_cost", e.target.value)}
-                      className="w-24 px-1 border border-ink/30 font-mono text-sm text-right bg-warm-white"
+                      title={
+                        isAvgCostSuspicious(pos)
+                          ? "Avg cost looks off vs market price — possible ÷quantity parse error. Verify before committing."
+                          : undefined
+                      }
+                      className={`w-24 px-1 border font-mono text-sm text-right ${
+                        isAvgCostSuspicious(pos)
+                          ? "border-amber-500 border-2 bg-amber-50"
+                          : "border-ink/30 bg-warm-white"
+                      }`}
                       placeholder="—"
                     />
                   </td>
@@ -269,6 +299,15 @@ export default function SnapshotReviewPane({ diffData, onCommit, onCancel }) {
           </div>
         )}
       </div>
+
+      {suspiciousTickers.length > 0 && (
+        <div className="text-xs font-mono border border-amber-400 bg-amber-50 text-amber-900 p-2">
+          ⚠ Avg cost looks off for{" "}
+          <strong>{suspiciousTickers.join(", ")}</strong> — it differs from the
+          per-share market price by more than 10×, which usually means the parser
+          divided cost basis by quantity. Verify (highlighted cells) before committing.
+        </div>
+      )}
 
       {error && (
         <p className="text-red-600 text-sm font-mono border border-red-300 p-2">{error}</p>
