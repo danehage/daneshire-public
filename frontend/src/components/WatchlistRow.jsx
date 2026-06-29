@@ -5,19 +5,13 @@ import {
   useDeleteWatchlistItem,
 } from "../hooks/useWatchlist";
 import TargetsAndJournal from "./TargetsAndJournal";
+import Badge, { STATUS_TONES } from "./Badge";
 
 const STATUS_LABELS = {
   watching: "Watching",
   owned: "Owned",
   position_open: "Open",
   closed: "Closed",
-};
-
-const STATUS_COLORS = {
-  watching: "bg-warm-white text-dark-brown border-ink",
-  owned: "bg-accent text-warm-white border-ink",
-  position_open: "bg-success text-warm-white border-ink",
-  closed: "bg-light-brown text-warm-white border-ink",
 };
 
 export default function WatchlistRow({ item, dragHandleProps }) {
@@ -88,12 +82,15 @@ export default function WatchlistRow({ item, dragHandleProps }) {
               <option value="closed">Closed</option>
             </select>
           ) : (
-            <button
+            <Badge
+              as="button"
+              tone={STATUS_TONES[item.status]}
+              border={2}
               onClick={() => setIsEditing(true)}
-              className={`text-xs px-3 py-1 border-2 uppercase tracking-wide font-medium ${STATUS_COLORS[item.status]}`}
+              className="px-3 py-1"
             >
               {STATUS_LABELS[item.status]}
-            </button>
+            </Badge>
           )}
         </td>
         <td className="py-4 px-4 text-mid-brown font-sans">

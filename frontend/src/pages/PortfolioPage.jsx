@@ -94,7 +94,7 @@ function HoldingsTable({ positions }) {
               </td>
               <td
                 className={`py-2 px-3 text-right ${
-                  isPositive ? "text-green-700" : isNegative ? "text-red-700" : "text-ink"
+                  isPositive ? "text-gain" : isNegative ? "text-loss" : "text-ink"
                 }`}
               >
                 {dayChgNum != null
@@ -453,8 +453,8 @@ function TradeLog({ accountId }) {
                       <span
                         className={`px-1 py-0.5 text-xs font-mono uppercase border ${
                           t.side === "buy"
-                            ? "border-green-600 text-green-700"
-                            : "border-red-500 text-red-600"
+                            ? "border-gain text-gain"
+                            : "border-loss text-loss"
                         }`}
                       >
                         {t.side}
@@ -464,7 +464,7 @@ function TradeLog({ accountId }) {
                     <td className="py-2 px-3 text-right">${Number(t.price).toFixed(2)}</td>
                     <td
                       className={`py-2 px-3 text-right ${
-                        isPos ? "text-green-700" : isNeg ? "text-red-700" : "text-mid-brown"
+                        isPos ? "text-gain" : isNeg ? "text-loss" : "text-mid-brown"
                       }`}
                     >
                       {pl != null

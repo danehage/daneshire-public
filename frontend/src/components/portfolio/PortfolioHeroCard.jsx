@@ -1,3 +1,5 @@
+import Card from "../Card";
+
 function freshnessLabel(lastSnapshotAt) {
   if (!lastSnapshotAt) return null;
   const snapshotDate = new Date(lastSnapshotAt);
@@ -25,7 +27,7 @@ export default function PortfolioHeroCard({ portfolio }) {
   const freshness = freshnessLabel(last_snapshot_at);
 
   return (
-    <div className="bg-warm-white border-2 border-ink shadow-hard mb-6">
+    <Card className="mb-6">
       <div className="px-4 py-3 border-b-2 border-ink flex items-center justify-between">
         <h2 className="font-serif font-bold text-lg">Portfolio Value</h2>
         {freshness && (
@@ -47,7 +49,7 @@ export default function PortfolioHeroCard({ portfolio }) {
           </div>
           <div
             className={`text-2xl font-serif font-bold ${
-              isPositive ? "text-green-700" : isNegative ? "text-red-700" : "text-ink"
+              isPositive ? "text-gain" : isNegative ? "text-loss" : "text-ink"
             }`}
           >
             {dayChangeNum != null
@@ -64,6 +66,6 @@ export default function PortfolioHeroCard({ portfolio }) {
           </div>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

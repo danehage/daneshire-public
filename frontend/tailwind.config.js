@@ -16,6 +16,8 @@ export default {
         error: "var(--error)",
         warning: "var(--warning)",
         success: "var(--success)",
+        gain: "var(--gain)",
+        loss: "var(--loss)",
       },
       fontFamily: {
         serif: ["Georgia", "Times New Roman", "serif"],

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useWatchlist } from "../hooks/useWatchlist";
 import WatchlistTable from "../components/WatchlistTable";
 import AddTickerForm from "../components/AddTickerForm";
+import Card from "../components/Card";
 
 const TABS = [
   { key: null, label: "All" },
@@ -38,7 +39,7 @@ export default function WatchlistPage() {
         ))}
       </div>
 
-      <div className="bg-warm-white border-2 border-ink shadow-hard">
+      <Card>
         {isLoading ? (
           <div className="py-16 text-center text-mid-brown font-sans">
             Loading...
@@ -50,7 +51,7 @@ export default function WatchlistPage() {
         ) : (
           <WatchlistTable items={items || []} />
         )}
-      </div>
+      </Card>
     </div>
   );
 }
