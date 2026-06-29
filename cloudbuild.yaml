@@ -64,6 +64,13 @@ steps:
       - '512Mi'
       - '--cpu'
       - '1'
+      # Scanner runs as a background task and reports progress over a long-lived
+      # SSE stream. --no-cpu-throttling keeps the background task making progress
+      # after /execute returns; --timeout 3600 lets the SSE stream stay open for
+      # the full duration of a large-universe scan (default 300s caused 504s).
+      - '--no-cpu-throttling'
+      - '--timeout'
+      - '3600'
 
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
