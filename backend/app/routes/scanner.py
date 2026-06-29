@@ -28,6 +28,11 @@ router = APIRouter(prefix="/api/scan", tags=["scanner"])
 # In-memory storage for active scans (replace with Redis/DB for production)
 _active_scans: dict[str, dict] = {}
 
+# Strong references to in-flight background scan tasks. asyncio only holds a
+# weak reference to tasks, so without this they could be garbage-collected
+# mid-scan. Tasks remove themselves on completion.
+_scan_tasks: set[asyncio.Task] = set()
+
 
 @router.get("/universes", response_model=list[UniverseInfo])
 async def list_universes():
@@ -55,8 +60,13 @@ async def execute_scan(
     market: MarketData = Depends(get_market),
 ):
     """
-    Start a new scan. Returns scan_id to use for streaming progress.
-    In Cloud Run, we run the scan synchronously to avoid background task issues.
+    Start a new scan and return its scan_id immediately.
+
+    The scan runs as a background task; the frontend tracks progress via the
+    SSE ``/{scan_id}/stream`` endpoint and fetches results when complete. This
+    avoids the 504 that a synchronous scan hit on large universes (Cloud Run's
+    request timeout). Requires CPU-always-allocated on Cloud Run so the task
+    keeps making progress after this request returns (see cloudbuild.yaml).
     """
     tickers = get_universe(request.universe)
     if not tickers:
@@ -96,27 +106,34 @@ async def execute_scan(
         elif event["type"] == "complete":
             scan_state["status"] = "complete"
 
-    # Run scan synchronously (await completion)
-    try:
-        scan_id, results = await scanner.run_scan(
-            tickers,
-            progress_callback=progress_callback,
-            use_cache=request.use_cache,
-            universe=request.universe,
-        )
-        scan_state["results"] = results
-        scan_state["status"] = "complete"
-        scan_state["completed_at"] = datetime.utcnow()
-    except Exception as e:
-        logger.error(f"Scan failed: {e}")
-        scan_state["status"] = "error"
-        scan_state["error"] = str(e)
+    async def run_scan_task():
+        """Run the scan to completion, updating shared scan_state as it goes."""
+        try:
+            _, results = await scanner.run_scan(
+                tickers,
+                progress_callback=progress_callback,
+                use_cache=request.use_cache,
+                universe=request.universe,
+            )
+            scan_state["results"] = results
+            scan_state["status"] = "complete"
+            scan_state["completed_at"] = datetime.utcnow()
+        except Exception as e:
+            logger.error(f"Scan {temp_scan_id} failed: {e}", exc_info=True)
+            scan_state["status"] = "error"
+            scan_state["error"] = str(e)
+
+    # Kick off the scan in the background and return immediately. ``market`` is
+    # an app-state singleton, so ``scanner`` stays valid after this request ends.
+    task = asyncio.create_task(run_scan_task())
+    _scan_tasks.add(task)
+    task.add_done_callback(_scan_tasks.discard)
 
     return ScanExecuteResponse(
         scan_id=temp_scan_id,
         universe=request.universe,
         universe_size=len(tickers),
-        message=f"Scan complete. Found {len(scan_state['results'])} opportunities.",
+        message=f"Scan started across {len(tickers)} tickers.",
     )
 
 

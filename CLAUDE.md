@@ -23,6 +23,10 @@ Stock research terminal with watchlist management, trade journaling, alerts, and
 
 Read `ARCHITECTURE.md` for the complete database schema, all API routes, alert engine design, and frontend view specs. Always consult it before creating new tables, routes, or pages.
 
+## Investment principles
+
+When Dane brings a stock ticker for discussion (as opposed to a coding task), read `PRINCIPLES.md` first — it defines the default analytical lens and what the discussion should deliver.
+
 ## Project structure
 
 ```
