@@ -207,6 +207,26 @@ async def test_get_portfolio_no_account_id_aggregates(client: AsyncClient):
     assert len(data["positions"]) == len(SNAPSHOT_PAYLOAD["positions"]) + 1
     assert data["last_snapshot_at"] is not None
 
+    # Each position is tagged with its owning account so the consolidated view
+    # can show which account a row belongs to.
+    by_ticker = {p["ticker"]: p for p in data["positions"]}
+    assert by_ticker["GOOGL"]["account_name"] == "Roth IRA"
+    assert all(p["account_name"] for p in data["positions"])
+    # The GOOGL row belongs to Roth; the SNAPSHOT_PAYLOAD rows to "Taxable".
+    assert {p["account_name"] for p in data["positions"]} == {"Roth IRA", "Taxable"}
+
+
+@pytest.mark.asyncio
+async def test_single_account_view_has_null_account_name(client: AsyncClient):
+    """A single-account view does not tag rows with account_name (the header
+    already names the account)."""
+    await client.post("/api/portfolio/snapshots/commit", json=SNAPSHOT_PAYLOAD)
+    account_id = (await client.get("/api/portfolio/accounts")).json()[0]["id"]
+
+    data = (await client.get(f"/api/portfolio?account_id={account_id}")).json()
+    assert data["positions"]
+    assert all(p["account_name"] is None for p in data["positions"])
+
 
 @pytest.mark.asyncio
 async def test_get_portfolio_no_account_id_no_accounts(client: AsyncClient):

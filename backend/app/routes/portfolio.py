@@ -58,9 +58,9 @@ async def get_portfolio(
     account most in need of a re-upload).
     """
     if account_id is None:
-        acc_result = await db.execute(select(Account.id))
-        account_ids = list(acc_result.scalars().all())
-        if not account_ids:
+        acc_result = await db.execute(select(Account.id, Account.name).order_by(Account.name))
+        accounts = list(acc_result.all())
+        if not accounts:
             return PortfolioValueResponse(
                 account_id=None,
                 last_snapshot_at=None,
@@ -70,7 +70,14 @@ async def get_portfolio(
                 positions=[],
             )
 
-        values = [await engine.portfolio_value(aid) for aid in account_ids]
+        values = []
+        for aid, aname in accounts:
+            value = await engine.portfolio_value(aid)
+            # Tag each holding with its account so the consolidated view can
+            # show which account a row belongs to (rows are not merged).
+            for h in value.positions:
+                h.account_name = aname
+            values.append(value)
         snapshot_times = [v.last_snapshot_at for v in values if v.last_snapshot_at]
         cash_parts = [v.cash_balance for v in values if v.cash_balance is not None]
         pv = PortfolioValue(
@@ -102,6 +109,7 @@ async def get_portfolio(
                 expiry=h.expiry,
                 multiplier=h.multiplier,
                 underlying_ticker=h.underlying_ticker,
+                account_name=h.account_name,
             )
             for h in pv.positions
         ],

@@ -45,6 +45,9 @@ class ComputedHolding:
     expiry: Optional[date] = None
     multiplier: Optional[int] = None
     underlying_ticker: Optional[str] = None
+    # Set only in the aggregated "All accounts" view so the UI can show which
+    # account a row belongs to. None for single-account views.
+    account_name: Optional[str] = None
 
 
 @dataclass

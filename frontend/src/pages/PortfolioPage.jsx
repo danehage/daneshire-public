@@ -34,7 +34,7 @@ function HoldingsBadge({ type }) {
   return null;
 }
 
-function HoldingsTable({ positions }) {
+function HoldingsTable({ positions, showAccount = false }) {
   if (positions.length === 0) {
     return (
       <div className="p-8 text-center text-mid-brown font-mono text-sm">
@@ -48,6 +48,9 @@ function HoldingsTable({ positions }) {
       <thead>
         <tr className="border-b-2 border-ink">
           <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Ticker</th>
+          {showAccount && (
+            <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Account</th>
+          )}
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Qty</th>
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Avg Cost</th>
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Mkt Value</th>
@@ -82,6 +85,9 @@ function HoldingsTable({ positions }) {
                   </div>
                 )}
               </td>
+              {showAccount && (
+                <td className="py-2 px-3 text-mid-brown">{pos.account_name ?? "—"}</td>
+              )}
               <td className="py-2 px-3 text-right">{Number(pos.qty).toLocaleString()}</td>
               <td className="py-2 px-3 text-right">${Number(pos.avg_cost).toFixed(2)}</td>
               <td className="py-2 px-3 text-right">
@@ -561,7 +567,7 @@ export default function PortfolioPage() {
         ) : error ? (
           <div className="p-8 text-center text-red-600 font-mono text-sm">{error.message}</div>
         ) : (
-          <HoldingsTable positions={positions} />
+          <HoldingsTable positions={positions} showAccount={!selectedAccountId} />
         )}
       </div>
 

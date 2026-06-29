@@ -135,6 +135,8 @@ class ComputedHoldingResponse(BaseModel):
     expiry: Optional[date] = None
     multiplier: Optional[int] = None
     underlying_ticker: Optional[str] = None
+    # Populated only in the aggregated "All accounts" view; null otherwise.
+    account_name: Optional[str] = None
 
 
 class PortfolioValueResponse(BaseModel):
