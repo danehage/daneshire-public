@@ -240,8 +240,9 @@ async def test_get_portfolio_no_account_id_no_accounts(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_get_portfolio_positions_have_null_market_value(client: AsyncClient):
-    """Positions have null market_value when the market returns no quotes (NullMarket)."""
+async def test_get_portfolio_falls_back_to_snapshot_market_value(client: AsyncClient):
+    """With no live quote (NullMarket), market_value falls back to the broker's
+    snapshot value; day_change stays null and the total includes the fallback."""
     await client.post("/api/portfolio/snapshots/commit", json=SNAPSHOT_PAYLOAD)
     accounts = (await client.get("/api/portfolio/accounts")).json()
     account_id = accounts[0]["id"]
@@ -250,10 +251,15 @@ async def test_get_portfolio_positions_have_null_market_value(client: AsyncClien
     assert response.status_code == 200
     data = response.json()
 
+    by_ticker = {p["ticker"]: p for p in data["positions"]}
+    assert Decimal(by_ticker["AAPL"]["market_value"]) == Decimal("1900.00")
+    assert Decimal(by_ticker["MSFT"]["market_value"]) == Decimal("2100.00")
     for pos in data["positions"]:
-        # _NullMarket returns {} for quotes — market_value is null
-        assert pos["market_value"] is None
+        # No live quote → no intraday delta.
         assert pos["day_change"] is None
+
+    # total = snapshot fallbacks (1900 + 2100) + cash (5000)
+    assert Decimal(data["total_value"]) == Decimal("9000.00")
 
 
 @pytest.mark.asyncio

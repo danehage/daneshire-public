@@ -142,9 +142,12 @@ class ComputedHoldingResponse(BaseModel):
 class PortfolioValueResponse(BaseModel):
     """Response shape for GET /api/portfolio?account_id=…
 
-    ``market_value`` and ``day_change`` on positions are null when FMP
-    has no usable quote (e.g. options, missing tickers, or market closed).
-    ``total_value`` excludes positions whose market_value is null.
+    ``market_value`` is the live FMP mark for equities, falling back to the
+    broker's snapshot value for positions that can't be live-marked (options,
+    or missing quotes). ``day_change`` is null for snapshot-fallback positions
+    (no intraday delta). ``total_value`` includes every position with a
+    non-null ``market_value`` (live or snapshot) plus cash; only positions with
+    neither are excluded.
     """
 
     model_config = ConfigDict(from_attributes=False)

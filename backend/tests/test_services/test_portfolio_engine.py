@@ -88,6 +88,12 @@ async def _insert_holding(
     qty: str = "10",
     avg_cost: str = "100.00",
     instrument_type: str = "equity",
+    market_value_at_snapshot: Optional[str] = None,
+    option_type: Optional[str] = None,
+    strike: Optional[str] = None,
+    expiry: Optional[date] = None,
+    multiplier: Optional[int] = None,
+    underlying_ticker: Optional[str] = None,
 ) -> Holding:
     h = Holding(
         snapshot_id=snapshot_id,
@@ -95,6 +101,16 @@ async def _insert_holding(
         qty=Decimal(qty),
         avg_cost=Decimal(avg_cost),
         instrument_type=instrument_type,
+        market_value_at_snapshot=(
+            Decimal(market_value_at_snapshot)
+            if market_value_at_snapshot is not None
+            else None
+        ),
+        option_type=option_type,
+        strike=Decimal(strike) if strike is not None else None,
+        expiry=expiry,
+        multiplier=multiplier,
+        underlying_ticker=underlying_ticker,
     )
     db.add(h)
     await db.flush()

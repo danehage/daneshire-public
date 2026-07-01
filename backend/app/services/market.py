@@ -177,6 +177,17 @@ class _TTLSingleflightCache(Generic[T]):
         # consumed.
         return await waiter
 
+    def set(self, key: Any, value: T) -> None:
+        """Store a value directly under ``key`` with a fresh TTL.
+
+        Used to populate the cache from a bulk fetch that resolved many keys
+        in one request (see ``MarketData.quotes``), bypassing the per-key
+        single-flight ``get_or_fetch`` path.
+        """
+        self._entries[key] = _CacheEntry(
+            value=value, expires_at=self._clock() + self._ttl
+        )
+
     def invalidate(self, key: Any) -> None:
         self._entries.pop(key, None)
 
@@ -263,21 +274,57 @@ class MarketData:
         return _quote_from_raw(ticker, raw)
 
     async def quotes(self, tickers: list[str]) -> dict[str, PriceQuote | MarketDataError]:
-        """Fetch multiple quotes; per-ticker errors are returned, not raised."""
-        symbols = [t.upper() for t in tickers]
+        """Fetch multiple quotes in ONE bulk FMP request; per-ticker errors are
+        returned, not raised.
+
+        Fresh cache hits are served without any request. Cache misses are
+        fetched together via FMP's bulk endpoint (one call instead of N) and
+        written back to the per-ticker cache, so subsequent single ``quote()``
+        calls reuse them. A ticker absent from the bulk response surfaces as
+        ``TickerNotFound``; a whole-request failure as ``UpstreamError``.
+        """
         # Dedupe while preserving order.
         unique: list[str] = []
         seen: set[str] = set()
-        for s in symbols:
+        for t in tickers:
+            s = t.upper()
             if s not in seen:
                 seen.add(s)
                 unique.append(s)
 
         results: dict[str, PriceQuote | MarketDataError] = {}
-        await asyncio.gather(
-            *[self._gather_one(s, self.quote, results) for s in unique],
-            return_exceptions=False,
-        )
+        misses: list[str] = []
+        for s in unique:
+            cached = self._quote_cache._get_fresh(("quote", s))
+            if cached is not None:
+                results[s] = cached
+            else:
+                misses.append(s)
+
+        if not misses:
+            return results
+
+        try:
+            raw_map = await self.client.get_batch_quotes(misses)
+            batch_error: Optional[str] = None
+        except Exception as exc:  # noqa: BLE001 — surface as per-ticker error
+            raw_map = {}
+            batch_error = str(exc)
+
+        for s in misses:
+            raw = raw_map.get(s)
+            if raw:
+                try:
+                    quote = _quote_from_raw(s, raw)
+                except Exception as exc:  # noqa: BLE001
+                    results[s] = UpstreamError(s, str(exc))
+                else:
+                    self._quote_cache.set(("quote", s), quote)
+                    results[s] = quote
+            elif batch_error is not None:
+                results[s] = UpstreamError(s, batch_error)
+            else:
+                results[s] = TickerNotFound(s)
         return results
 
     # -- analyses -----------------------------------------------------------

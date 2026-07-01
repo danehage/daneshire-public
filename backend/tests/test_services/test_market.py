@@ -58,6 +58,8 @@ class FakeFMP:
         self._fail_for = fail_for or set()
         self.quote_calls: dict[str, int] = {}
         self.history_calls: dict[str, int] = {}
+        # One entry per get_batch_quotes call, holding the requested tickers.
+        self.batch_calls: list[list[str]] = []
 
     async def get_quote(self, ticker: str):
         self.quote_calls[ticker] = self.quote_calls.get(ticker, 0) + 1
@@ -66,6 +68,19 @@ class FakeFMP:
         if self._quote_delay:
             await asyncio.sleep(self._quote_delay)
         return self._quotes.get(ticker)
+
+    async def get_batch_quotes(self, tickers, max_concurrent: int = 10):
+        """Bulk endpoint stand-in: returns only tickers we have data for.
+
+        Raises on the whole request if any requested ticker is in
+        ``fail_for`` — the real client raises when a chunk can't be fetched.
+        """
+        self.batch_calls.append(list(tickers))
+        if self._quote_delay:
+            await asyncio.sleep(self._quote_delay)
+        if self._fail_for & set(tickers):
+            raise RuntimeError("batch quote request failed")
+        return {t: self._quotes[t] for t in tickers if t in self._quotes}
 
     async def get_historical_data(self, ticker: str, days: int = 252):
         self.history_calls[ticker] = self.history_calls.get(ticker, 0) + 1
@@ -219,10 +234,11 @@ async def test_quote_fetch_error_does_not_pollute_cache():
 
 
 @pytest.mark.asyncio
-async def test_quotes_partial_batch_failure_returns_error_per_ticker():
+async def test_quotes_missing_tickers_return_not_found():
+    """Tickers absent from the bulk response surface as TickerNotFound;
+    known tickers come back as quotes. One bulk call serves them all."""
     fmp = FakeFMP(
         quotes={"AAPL": {"price": 150.0}, "MSFT": {"price": 410.0}},
-        fail_for={"BAD"},
     )
     market = _make_market(fmp=fmp)
 
@@ -230,10 +246,47 @@ async def test_quotes_partial_batch_failure_returns_error_per_ticker():
 
     assert isinstance(results["AAPL"], PriceQuote)
     assert isinstance(results["MSFT"], PriceQuote)
-    assert isinstance(results["BAD"], UpstreamError)
+    assert isinstance(results["BAD"], TickerNotFound)
     assert isinstance(results["GONE"], TickerNotFound)
-    # Whole-batch call did not raise.
     assert set(results.keys()) == {"AAPL", "MSFT", "BAD", "GONE"}
+    # All misses fetched in a single bulk request.
+    assert fmp.batch_calls == [["AAPL", "MSFT", "BAD", "GONE"]]
+
+
+@pytest.mark.asyncio
+async def test_quotes_whole_batch_failure_returns_upstream_error():
+    """When the bulk request itself raises, every miss surfaces as
+    UpstreamError rather than being silently dropped."""
+    fmp = FakeFMP(
+        quotes={"AAPL": {"price": 150.0}, "MSFT": {"price": 410.0}},
+        fail_for={"MSFT"},  # any requested ticker in fail_for fails the request
+    )
+    market = _make_market(fmp=fmp)
+
+    results = await market.quotes(["AAPL", "MSFT"])
+
+    assert isinstance(results["AAPL"], UpstreamError)
+    assert isinstance(results["MSFT"], UpstreamError)
+
+
+@pytest.mark.asyncio
+async def test_quotes_serves_fresh_cache_without_a_batch_call():
+    """A ticker already fresh in the per-ticker cache is served without any
+    bulk request; only genuine misses hit get_batch_quotes."""
+    fmp = FakeFMP(quotes={"AAPL": {"price": 150.0}, "MSFT": {"price": 410.0}})
+    market = _make_market(fmp=fmp)
+
+    # Warm AAPL via the single-quote path.
+    await market.quote("AAPL")
+    assert fmp.quote_calls["AAPL"] == 1
+
+    results = await market.quotes(["AAPL", "MSFT"])
+
+    assert isinstance(results["AAPL"], PriceQuote)
+    assert isinstance(results["MSFT"], PriceQuote)
+    # AAPL served from cache; only MSFT went to the bulk endpoint.
+    assert fmp.batch_calls == [["MSFT"]]
+    assert fmp.quote_calls["AAPL"] == 1  # not re-fetched
 
 
 @pytest.mark.asyncio
@@ -244,7 +297,8 @@ async def test_quotes_dedupes_repeated_tickers():
     results = await market.quotes(["AAPL", "aapl", "AAPL"])
 
     assert list(results.keys()) == ["AAPL"]
-    assert fmp.quote_calls["AAPL"] == 1
+    # Deduped to a single symbol in one bulk request.
+    assert fmp.batch_calls == [["AAPL"]]
 
 
 # ---------------------------------------------------------------------------

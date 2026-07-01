@@ -48,6 +48,11 @@ class ComputedHolding:
     # Set only in the aggregated "All accounts" view so the UI can show which
     # account a row belongs to. None for single-account views.
     account_name: Optional[str] = None
+    # The broker's market value for this leg as recorded in the snapshot.
+    # Used as a fallback in portfolio_value when the position can't be
+    # live-marked (options, or equities with no FMP quote). Set to None once a
+    # trade touches the position, since the snapshot value is then stale.
+    market_value_at_snapshot: Optional[Decimal] = None
 
 
 @dataclass
@@ -152,6 +157,7 @@ class PortfolioEngine:
                 "expiry": h.expiry,
                 "multiplier": h.multiplier,
                 "underlying_ticker": h.underlying_ticker,
+                "market_value_at_snapshot": h.market_value_at_snapshot,
             }
 
         # Load trades committed after the snapshot, in chronological order
@@ -171,6 +177,10 @@ class PortfolioEngine:
                 trade.ticker, trade.instrument_type,
                 trade.option_type, trade.strike, trade.expiry,
             )
+            # Any trade touching a position makes its snapshot market value
+            # stale (the qty no longer matches), so it can't be used as a mark.
+            if key in positions:
+                positions[key]["market_value_at_snapshot"] = None
             if trade.side == "buy":
                 if key in positions:
                     old_qty = positions[key]["qty"]
@@ -202,6 +212,8 @@ class PortfolioEngine:
                         "expiry": trade.expiry,
                         "multiplier": trade.multiplier,
                         "underlying_ticker": trade.underlying_ticker,
+                        # No broker snapshot value for a trade-created position.
+                        "market_value_at_snapshot": None,
                     }
             elif trade.side == "sell":
                 if key in positions:
@@ -231,6 +243,7 @@ class PortfolioEngine:
                 expiry=p["expiry"],
                 multiplier=p["multiplier"],
                 underlying_ticker=p["underlying_ticker"],
+                market_value_at_snapshot=p.get("market_value_at_snapshot"),
             )
             for p in positions.values()
         ]
@@ -339,11 +352,14 @@ class PortfolioEngine:
         """current_holdings + live FMP marks + cash + totals.
 
         Equity positions receive live ``market_value`` and ``day_change``
-        when FMP returns a usable quote. Missing or errored quotes surface
-        as ``market_value=None`` on the position; they are excluded from
-        the total but the position row is still included.
-
-        Options are not live-marked — they always have ``market_value=None``.
+        when FMP returns a usable quote. When a position can't be live-marked
+        (options, or an equity with no/errored quote) it falls back to the
+        broker's ``market_value_at_snapshot`` so the total still reflects it —
+        matching the broker instead of silently dropping the leg. The fallback
+        carries no ``day_change`` (we have no intraday delta for it). A position
+        with neither a live mark nor a snapshot value stays ``market_value=None``
+        and is excluded from the total. Snapshot fallbacks are invalidated once
+        a trade touches the position (see ``current_holdings``).
         """
         snap_result = await self.db.execute(
             select(PortfolioSnapshot)
@@ -384,6 +400,11 @@ class PortfolioEngine:
             else:
                 market_value = None
                 day_change = None
+
+            # Fall back to the broker's snapshot value when we couldn't live-mark
+            # (options always; equities with a missing quote). No day_change.
+            if market_value is None and h.market_value_at_snapshot is not None:
+                market_value = h.market_value_at_snapshot
 
             computed.append(
                 ComputedHolding(
