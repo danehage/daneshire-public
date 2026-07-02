@@ -55,6 +55,16 @@ gcloud secrets create auth-password --replication-policy="automatic"
 echo -n "your-secure-password" | \
   gcloud secrets versions add auth-password --data-file=-
 
+# Guest credentials (optional — scanner + earnings market data only, no
+# personal data; guest login stays disabled until both secrets exist)
+gcloud secrets create guest-username --replication-policy="automatic"
+echo -n "chosen-guest-username" | \
+  gcloud secrets versions add guest-username --data-file=-
+
+gcloud secrets create guest-password --replication-policy="automatic"
+echo -n "chosen-guest-password" | \
+  gcloud secrets versions add guest-password --data-file=-
+
 # Earnings module (Finnhub calendar)
 gcloud secrets create finnhub-api-key --replication-policy="automatic"
 echo -n "your-finnhub-api-key" | \
@@ -102,6 +112,8 @@ gcloud run deploy danecast-trades \
   --set-secrets "SCHEDULER_SECRET=scheduler-secret:latest" \
   --set-secrets "AUTH_USERNAME=auth-username:latest" \
   --set-secrets "AUTH_PASSWORD=auth-password:latest" \
+  --set-secrets "GUEST_USERNAME=guest-username:latest" \
+  --set-secrets "GUEST_PASSWORD=guest-password:latest" \
   --set-secrets "FINNHUB_API_KEY=finnhub-api-key:latest" \
   --set-secrets "TASTYTRADE_CLIENT_SECRET=tastytrade-client-secret:latest" \
   --set-secrets "TASTYTRADE_REFRESH_TOKEN=tastytrade-refresh-token:latest" \
@@ -443,6 +455,8 @@ curl -X POST ${SERVICE_URL}/api/internal/health \
 | `SCHEDULER_SECRET` | Secret for internal endpoints | Yes |
 | `AUTH_USERNAME` | Basic auth username for web access | Yes (prod) |
 | `AUTH_PASSWORD` | Basic auth password for web access | Yes (prod) |
+| `GUEST_USERNAME` | Guest login username (scanner + earnings only) | No (guest disabled if unset) |
+| `GUEST_PASSWORD` | Guest login password | No (guest disabled if unset) |
 | `GCS_BACKUP_BUCKET` | GCS bucket name for nightly pg_dump backups | Yes (backup) |
 | `ENVIRONMENT` | `development` or `production` | No (default: development) |
 | `PORT` | Server port (Cloud Run sets this) | No (default: 8080) |
