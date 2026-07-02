@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Layout from "./components/Layout";
+import OwnerRoute from "./components/OwnerRoute";
 import DashboardPage from "./pages/DashboardPage";
 import WatchlistPage from "./pages/WatchlistPage";
 import ScannerPage from "./pages/ScannerPage";
@@ -14,14 +15,14 @@ function App() {
     <BrowserRouter>
       <Layout>
         <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/watchlist" element={<WatchlistPage />} />
+          <Route path="/" element={<OwnerRoute><DashboardPage /></OwnerRoute>} />
+          <Route path="/watchlist" element={<OwnerRoute><WatchlistPage /></OwnerRoute>} />
           <Route path="/scanner" element={<ScannerPage />} />
           <Route path="/ticker/:symbol" element={<TickerDetailPage />} />
           <Route path="/earnings" element={<EarningsPage />} />
-          <Route path="/alerts" element={<AlertsPage />} />
-          <Route path="/journal" element={<JournalPage />} />
-          <Route path="/portfolio" element={<PortfolioPage />} />
+          <Route path="/alerts" element={<OwnerRoute><AlertsPage /></OwnerRoute>} />
+          <Route path="/journal" element={<OwnerRoute><JournalPage /></OwnerRoute>} />
+          <Route path="/portfolio" element={<OwnerRoute><PortfolioPage /></OwnerRoute>} />
         </Routes>
       </Layout>
     </BrowserRouter>

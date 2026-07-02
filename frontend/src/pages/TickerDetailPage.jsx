@@ -1,6 +1,7 @@
 import { useParams, Link } from "react-router-dom";
 import { useTickerAnalysis, useTickerWatchlistItem } from "../hooks/useTicker";
 import { useCreateWatchlistItem } from "../hooks/useWatchlist";
+import { useRole } from "../hooks/useMe";
 import TargetsAndJournal from "../components/TargetsAndJournal";
 import EarningsCard from "../components/EarningsCard";
 
@@ -95,6 +96,7 @@ export default function TickerDetailPage() {
   const { data: watchlistItem, isLoading: watchlistLoading } =
     useTickerWatchlistItem(symbol);
   const addToWatchlist = useCreateWatchlistItem();
+  const role = useRole();
 
   const handleAddToWatchlist = () => {
     addToWatchlist.mutate({
@@ -162,7 +164,7 @@ export default function TickerDetailPage() {
             </div>
             <ScoreBadge score={analysis.score} />
           </div>
-          {!watchlistLoading && !watchlistItem && (
+          {role === "owner" && !watchlistLoading && !watchlistItem && (
             <button
               onClick={handleAddToWatchlist}
               disabled={addToWatchlist.isPending}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useUniverses, useScan } from "../hooks/useScanner";
 import { useCreateWatchlistItem } from "../hooks/useWatchlist";
+import { useRole } from "../hooks/useMe";
 
 function UniverseSelector({ value, onChange, universes }) {
   return (
@@ -117,13 +118,15 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
         </td>
         <td className="py-3 px-4 text-sm">{result.rsi.toFixed(0)}</td>
         <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={() => onAddToWatchlist(result)}
-            disabled={isAdding}
-            className="px-3 py-1 text-xs font-medium uppercase tracking-wide border-2 border-ink bg-accent text-warm-white hover:bg-accent-hover shadow-hard-sm disabled:opacity-50"
-          >
-            {isAdding ? "..." : "+ Add"}
-          </button>
+          {onAddToWatchlist && (
+            <button
+              onClick={() => onAddToWatchlist(result)}
+              disabled={isAdding}
+              className="px-3 py-1 text-xs font-medium uppercase tracking-wide border-2 border-ink bg-accent text-warm-white hover:bg-accent-hover shadow-hard-sm disabled:opacity-50"
+            >
+              {isAdding ? "..." : "+ Add"}
+            </button>
+          )}
         </td>
       </tr>
       {expanded && (
@@ -287,6 +290,7 @@ export default function ScannerPage() {
   } = useScan();
 
   const addToWatchlist = useCreateWatchlistItem();
+  const role = useRole();
 
   const handleStartScan = () => {
     reset();
@@ -402,7 +406,7 @@ export default function ScannerPage() {
           </div>
           <ResultsTable
             results={results.results}
-            onAddToWatchlist={handleAddToWatchlist}
+            onAddToWatchlist={role === "owner" ? handleAddToWatchlist : null}
             addingTicker={addingTicker}
           />
         </div>

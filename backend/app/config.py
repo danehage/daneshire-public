@@ -34,12 +34,21 @@ class Settings(BaseSettings):
     auth_username: str = ""
     auth_password: str = ""
 
+    # Optional guest credentials — read-only access to the scanner and
+    # earnings market data, no personal data (watchlist/portfolio/journal/alerts)
+    guest_username: str = ""
+    guest_password: str = ""
+
     # Environment
     environment: str = "development"
 
     @property
     def auth_enabled(self) -> bool:
         return bool(self.auth_username and self.auth_password)
+
+    @property
+    def guest_enabled(self) -> bool:
+        return bool(self.guest_username and self.guest_password)
 
     @property
     def is_production(self) -> bool:

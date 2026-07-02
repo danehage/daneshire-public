@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,12 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     PUBLIC_PATHS = {"/api/health"}
     # Paths that use scheduler secret instead of basic auth
     INTERNAL_PREFIX = "/api/internal/"
+
+    # API surface reachable with guest credentials: scanner + earnings
+    # market data. Everything else under /api/ is owner-only. Non-/api
+    # paths (the static frontend) are always reachable once authenticated.
+    GUEST_ALLOWED_API_PREFIXES = ("/api/me", "/api/scan", "/api/earnings")
+    GUEST_DENIED_API_PREFIXES = ("/api/earnings/trades",)
 
     # Rate limiting: max failed attempts per IP before lockout
     MAX_FAILED_ATTEMPTS = 5
@@ -48,6 +54,29 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     def _record_failure(self, client_ip: str):
         self._failed_attempts[client_ip].append(time.monotonic())
 
+    def _resolve_role(self, username: str, password: str) -> str | None:
+        """Map credentials to a role, or None if they match nothing.
+
+        Both credential pairs are always compared to keep timing uniform.
+        """
+        owner_user = secrets.compare_digest(username, settings.auth_username)
+        owner_pass = secrets.compare_digest(password, settings.auth_password)
+        guest_user = secrets.compare_digest(username, settings.guest_username)
+        guest_pass = secrets.compare_digest(password, settings.guest_password)
+
+        if owner_user and owner_pass:
+            return "owner"
+        if settings.guest_enabled and guest_user and guest_pass:
+            return "guest"
+        return None
+
+    def _is_guest_allowed(self, path: str) -> bool:
+        if not path.startswith("/api/"):
+            return True
+        if path.startswith(self.GUEST_DENIED_API_PREFIXES):
+            return False
+        return path.startswith(self.GUEST_ALLOWED_API_PREFIXES)
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
@@ -61,6 +90,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
         # Skip if auth not configured (local development)
         if not settings.auth_enabled:
+            request.state.role = "owner"
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
@@ -80,11 +110,14 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
                 credentials = base64.b64decode(auth_header[6:]).decode("utf-8")
                 username, password = credentials.split(":", 1)
 
-                # Use secrets.compare_digest to prevent timing attacks
-                username_ok = secrets.compare_digest(username, settings.auth_username)
-                password_ok = secrets.compare_digest(password, settings.auth_password)
-
-                if username_ok and password_ok:
+                role = self._resolve_role(username, password)
+                if role == "guest" and not self._is_guest_allowed(path):
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "This section requires owner access"},
+                    )
+                if role is not None:
+                    request.state.role = role
                     return await call_next(request)
             except (ValueError, UnicodeDecodeError):
                 pass
@@ -186,6 +219,13 @@ app.include_router(earnings_router)
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/me")
+async def whoami(request: Request):
+    """Role of the authenticated caller — the frontend uses this to hide
+    owner-only sections from guests."""
+    return {"role": getattr(request.state, "role", "owner")}
 
 
 @app.get("/api/health/db")

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEarningsScreen } from '../hooks/useEarnings';
+import { useRole } from '../hooks/useMe';
 import EarningsTradeForm from '../components/EarningsTradeForm';
 import EarningsTradesList from '../components/EarningsTradesList';
 
@@ -218,6 +219,7 @@ export default function EarningsPage() {
   const [sortField, setSortField] = useState('edge_ratio');
   const [sortDir, setSortDir] = useState('desc');
 
+  const role = useRole();
   const { data: events = [], isLoading, isError, error } = useEarningsScreen({
     start: startDate,
     end: endDate,
@@ -382,18 +384,20 @@ export default function EarningsPage() {
         </>
       )}
 
-      <div className="mt-10">
-        <h2 className="text-xl font-serif font-bold text-ink mb-1">
-          Earnings trades
-        </h2>
-        <p className="text-sm text-mid-brown mb-4">
-          Log iron condors / butterflies sold against the calendar.
-        </p>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <EarningsTradeForm earningsEvents={events} />
-          <EarningsTradesList />
+      {role === "owner" && (
+        <div className="mt-10">
+          <h2 className="text-xl font-serif font-bold text-ink mb-1">
+            Earnings trades
+          </h2>
+          <p className="text-sm text-mid-brown mb-4">
+            Log iron condors / butterflies sold against the calendar.
+          </p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <EarningsTradeForm earningsEvents={events} />
+            <EarningsTradesList />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

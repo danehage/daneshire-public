@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useRole } from "../hooks/useMe";
 
 const navItems = [
-  { path: "/", label: "Dashboard" },
-  { path: "/watchlist", label: "Watchlist" },
-  { path: "/portfolio", label: "Portfolio" },
-  { path: "/journal", label: "Journal" },
+  { path: "/", label: "Dashboard", ownerOnly: true },
+  { path: "/watchlist", label: "Watchlist", ownerOnly: true },
+  { path: "/portfolio", label: "Portfolio", ownerOnly: true },
+  { path: "/journal", label: "Journal", ownerOnly: true },
   { path: "/scanner", label: "Scanner" },
   { path: "/earnings", label: "Earnings" },
-  { path: "/alerts", label: "Alerts" },
+  { path: "/alerts", label: "Alerts", ownerOnly: true },
 ];
 
 function TickerSearch() {
@@ -45,6 +46,12 @@ function TickerSearch() {
 
 export default function Layout({ children }) {
   const location = useLocation();
+  const role = useRole();
+  // Until the role is known, show only the guest-safe items so a guest
+  // never sees owner-only links flash in.
+  const visibleItems = navItems.filter(
+    (item) => !item.ownerOnly || role === "owner"
+  );
 
   return (
     <div className="min-h-screen bg-cream">
@@ -53,7 +60,7 @@ export default function Layout({ children }) {
           {/* Masthead row: logo left, ticker search right */}
           <div className="flex items-center justify-between gap-4 h-14">
             <Link
-              to="/"
+              to={role === "guest" ? "/scanner" : "/"}
               className="text-lg sm:text-xl font-serif font-bold tracking-tight shrink-0"
             >
               <span className="text-accent">Dane</span>
@@ -63,7 +70,7 @@ export default function Layout({ children }) {
           </div>
           {/* Nav row: full container width, scrolls only on narrow screens */}
           <div className="flex overflow-x-auto border-t border-light-brown">
-            {navItems.map((item) => (
+            {visibleItems.map((item) => (
               <Link
                 key={item.path}
                 to={item.path}
