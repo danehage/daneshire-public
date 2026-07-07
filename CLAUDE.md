@@ -33,7 +33,8 @@ When Dane brings a stock ticker for discussion (as opposed to a coding task), re
 danecast-trades/
 ├── CLAUDE.md              ← you are here
 ├── ARCHITECTURE.md        ← full schema + API design
-├── TODO.md                ← current status, update after every session
+├── TODO.md                ← current status + latest session log, update after every session
+├── TODO_ARCHIVE.md        ← rotated history of past session logs
 ├── backend/
 │   ├── CLAUDE.md          ← backend-specific context
 │   ├── app/
@@ -176,6 +177,8 @@ At the start of every session:
 2. Check which build step is current
 3. Work on that step only — don't jump ahead
 4. Before ending: update TODO.md with what was completed and any issues hit
+5. When adding a new session entry to TODO.md, move the previous entry to TODO_ARCHIVE.md (append at the bottom, chronological order). TODO.md holds only: current status, open items too small to file, and the latest session log.
+6. Track open work in GitHub Issues, not prose lists carried between TODO.md entries — carried lists rot (see 2026-07-07 session).
 
 ## What to ask about before doing
 
