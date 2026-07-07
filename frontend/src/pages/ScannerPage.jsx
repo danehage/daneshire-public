@@ -52,16 +52,26 @@ function SignalBadge({ signal }) {
   // Color code based on signal content
   let colorClass = "bg-warm-white text-dark-brown border-light-brown";
 
-  if (signal.includes("HV") || signal.includes("volatility")) {
-    colorClass = "bg-warning text-warm-white border-ink";
-  } else if (signal.includes("Oversold") || signal.includes("RSI low")) {
+  if (
+    signal.includes("rising") ||
+    signal.includes("shrinking") ||
+    signal.includes("Higher") ||
+    signal.includes("Held") ||
+    signal.includes("draining") ||
+    signal.includes("closes above")
+  ) {
     colorClass = "bg-success text-warm-white border-ink";
-  } else if (signal.includes("Overbought") || signal.includes("RSI elevated")) {
+  } else if (
+    signal.includes("falling") ||
+    signal.includes("slipping") ||
+    signal.includes("deepening") ||
+    signal.includes("fading")
+  ) {
     colorClass = "bg-error text-warm-white border-ink";
   } else if (signal.includes("support") || signal.includes("Uptrend")) {
     colorClass = "bg-accent text-warm-white border-ink";
-  } else if (signal.includes("value") || signal.includes("Deep")) {
-    colorClass = "bg-success text-warm-white border-ink";
+  } else if (signal.includes("Recovery candidate")) {
+    colorClass = "bg-warning text-warm-white border-ink";
   } else if (signal.includes("cap") || signal.includes("liquid")) {
     colorClass = "bg-light-brown text-warm-white border-ink";
   }
@@ -71,6 +81,28 @@ function SignalBadge({ signal }) {
       className={`inline-block text-xs px-2 py-0.5 border ${colorClass} mr-1 mb-1`}
     >
       {signal}
+    </span>
+  );
+}
+
+function SetupBadge({ setup }) {
+  if (!setup) return <span className="text-light-brown">—</span>;
+
+  const colorClass =
+    setup === "Knife"
+      ? "bg-error text-warm-white"
+      : setup === "Fading bounce"
+      ? "bg-warning text-warm-white"
+      : setup === "Uptrend pullback"
+      ? "bg-accent text-warm-white"
+      : "bg-success text-warm-white"; // Exhaustion turn / Basing glide
+
+  return (
+    <span
+      className={`inline-block px-2 py-0.5 text-xs font-medium border-2 border-ink whitespace-nowrap ${colorClass}`}
+    >
+      {setup}
+      {setup === "Fading bounce" && " ⚠"}
     </span>
   );
 }
@@ -114,7 +146,21 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
         </td>
         <td className="py-3 px-4 text-sm text-mid-brown">{result.trend}</td>
         <td className="py-3 px-4 text-sm">
-          {result.hv_rank ? `${result.hv_rank.toFixed(0)}%` : "—"}
+          <SetupBadge setup={result.setup} />
+        </td>
+        <td className="py-3 px-4 text-sm font-mono">
+          {result.days_since_low != null ? (
+            <>
+              {result.days_since_low}d
+              {result.pct_above_low != null && (
+                <span className="text-mid-brown text-xs ml-1">
+                  +{result.pct_above_low.toFixed(0)}%
+                </span>
+              )}
+            </>
+          ) : (
+            "—"
+          )}
         </td>
         <td className="py-3 px-4 text-sm">{result.rsi.toFixed(0)}</td>
         <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
@@ -131,7 +177,7 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
       </tr>
       {expanded && (
         <tr className="bg-cream border-b-2 border-ink">
-          <td colSpan={7} className="px-6 py-4">
+          <td colSpan={8} className="px-6 py-4">
             <div className="grid grid-cols-4 gap-6 text-sm">
               <div>
                 <h4 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
@@ -247,7 +293,10 @@ function ResultsTable({ results, onAddToWatchlist, addingTicker }) {
               Trend
             </th>
             <th className="text-left py-3 px-4 text-xs font-medium uppercase tracking-wide text-dark-brown">
-              HV Rank
+              Setup
+            </th>
+            <th className="text-left py-3 px-4 text-xs font-medium uppercase tracking-wide text-dark-brown">
+              Off Low
             </th>
             <th className="text-left py-3 px-4 text-xs font-medium uppercase tracking-wide text-dark-brown">
               RSI

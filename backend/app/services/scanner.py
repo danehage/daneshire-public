@@ -78,138 +78,196 @@ class StockScanner:
             if hist_data is None or len(hist_data) < 20:
                 return None
 
-            df = pd.DataFrame(hist_data)
-            current_price = quote.get("price", 0)
-            current_volume = quote.get("volume", 0)
-
-            if current_price <= 0:
+            result = self._analyze_frame(ticker, quote, pd.DataFrame(hist_data))
+            if result is None:
                 return None
-
-            # Calculate all indicators
-            avg_volume = self.indicators.calculate_avg_volume(df, days=20)
-
-            if avg_volume and avg_volume > 0:
-                volume_pace, is_market_hours = self.indicators.calculate_volume_pace(
-                    current_volume, avg_volume
-                )
-            else:
-                volume_pace, is_market_hours = 1.0, False
-
-            vol_data = self.indicators.calculate_volatility_rank(df)
-            trend = self.indicators.calculate_trend(current_price, df)
-            range_52w = self.indicators.calculate_52w_position(current_price, df)
-            levels = self.indicators.calculate_support_resistance(current_price, df)
-            momentum = self.indicators.calculate_momentum(
-                current_price, current_volume, df
-            )
 
             # Fetch earnings date
             earnings = await self.client.get_earnings_date(ticker)
+            result["earnings_date"] = earnings["date"] if earnings else None
+            result["days_to_earnings"] = earnings["days_until"] if earnings else None
 
-            return {
-                "ticker": ticker,
-                "price": current_price,
-                "market_cap": int(quote.get("marketCap", 0) or 0),
-                "volume": int(current_volume or 0),
-                "avg_volume": int(avg_volume or 0),
-                "volume_pace": volume_pace,
-                "volume_pace_reliable": is_market_hours,
-                "hv_rank": vol_data["rank"] if vol_data else None,
-                "current_hv": vol_data["current_hv"] if vol_data else None,
-                "trend": trend["trend"] if trend else "Unknown",
-                "dist_50": trend["dist_50"] if trend else None,
-                "dist_200": trend["dist_200"] if trend else None,
-                "ma_slope": trend.get("ma_slope") if trend else None,
-                "range_position": range_52w["position_pct"],
-                "high_52w": range_52w["high_52w"],
-                "low_52w": range_52w["low_52w"],
-                "support": levels["support"],
-                "resistance": levels["resistance"],
-                "support_type": levels.get("support_type", "unknown"),
-                "resistance_type": levels.get("resistance_type", "unknown"),
-                "volume_ratio": momentum["volume_ratio"],
-                "rsi": momentum["rsi"],
-                "momentum_10d": momentum["momentum_10d"],
-                "earnings_date": earnings["date"] if earnings else None,
-                "days_to_earnings": earnings["days_until"] if earnings else None,
-            }
+            return result
 
         except Exception as e:
             logger.debug(f"Error processing {ticker}: {e}")
             return None
 
-    def _score_opportunity(self, result: dict) -> tuple[int, list[str]]:
+    def _analyze_frame(self, ticker: str, quote: dict, df: pd.DataFrame) -> Optional[dict]:
         """
-        Score a stock opportunity based on multiple factors.
-        Returns (score, list of signal descriptions).
+        Compute all indicators for one ticker from an OHLCV frame (oldest to
+        newest). Split from ``_process_ticker`` so tests can drive the full
+        analysis + scoring path from fixture bars without any network.
+        """
+        current_price = quote.get("price", 0)
+        current_volume = quote.get("volume", 0)
+
+        if current_price <= 0:
+            return None
+
+        # Calculate all indicators
+        avg_volume = self.indicators.calculate_avg_volume(df, days=20)
+
+        if avg_volume and avg_volume > 0:
+            volume_pace, is_market_hours = self.indicators.calculate_volume_pace(
+                current_volume, avg_volume
+            )
+        else:
+            volume_pace, is_market_hours = 1.0, False
+
+        vol_data = self.indicators.calculate_volatility_rank(df)
+        trend = self.indicators.calculate_trend(current_price, df)
+        range_52w = self.indicators.calculate_52w_position(current_price, df)
+        levels = self.indicators.calculate_support_resistance(current_price, df)
+        momentum = self.indicators.calculate_momentum(
+            current_price, current_volume, df
+        )
+        recovery = self.indicators.calculate_recovery_metrics(current_price, df)
+
+        result = {
+            "ticker": ticker,
+            "price": current_price,
+            "market_cap": int(quote.get("marketCap", 0) or 0),
+            "volume": int(current_volume or 0),
+            "avg_volume": int(avg_volume or 0),
+            "volume_pace": volume_pace,
+            "volume_pace_reliable": is_market_hours,
+            "hv_rank": vol_data["rank"] if vol_data else None,
+            "current_hv": vol_data["current_hv"] if vol_data else None,
+            "trend": trend["trend"] if trend else "Unknown",
+            "dist_50": trend["dist_50"] if trend else None,
+            "dist_200": trend["dist_200"] if trend else None,
+            "ma_slope": trend.get("ma_slope") if trend else None,
+            "range_position": range_52w["position_pct"],
+            "high_52w": range_52w["high_52w"],
+            "low_52w": range_52w["low_52w"],
+            "support": levels["support"],
+            "resistance": levels["resistance"],
+            "support_type": levels.get("support_type", "unknown"),
+            "resistance_type": levels.get("resistance_type", "unknown"),
+            "volume_ratio": momentum["volume_ratio"],
+            "rsi": momentum["rsi"],
+            "momentum_10d": momentum["momentum_10d"],
+        }
+
+        if recovery:
+            result.update(recovery)
+
+        return result
+
+    def _score_opportunity(self, result: dict) -> tuple[int, list[str], Optional[str]]:
+        """
+        Score a stock opportunity. Two tracks (issue #49):
+
+        - Recovery: >= 20% drawdown from the 52w high qualifies a stock for
+          this track but earns 0 points itself. Points measure whether the
+          falling has STOPPED — RSI floor direction across successive swing
+          lows (heaviest, signed), undercut deceleration, and the post-low
+          bounce holding vs fading — plus confirmations (HV decay, retests
+          held, 20-MA reclaim) that never gate.
+        - Uptrend pullback: the pre-existing pullback-to-rising-50MA logic,
+          unchanged.
+
+        Volume pace and earnings proximity are informational only.
+        Returns (score, signal descriptions, setup label or None).
         """
         score = 0
         signals = []
+        setup = None
 
-        # High HV Rank - good for option selling
-        hv_rank = result.get("hv_rank")
-        if hv_rank is not None:
-            if hv_rank > 70:
-                score += 25
-                signals.append(f"High HV Rank ({hv_rank:.0f}%)")
-            elif hv_rank > 50:
-                score += 15
-                signals.append(f"Elevated HV ({hv_rank:.0f}%)")
+        price = result.get("price") or 0
+        high_52w = result.get("high_52w") or 0
+        drawdown = ((price - high_52w) / high_52w * 100) if high_52w > 0 else 0.0
 
-        # Pullback in uptrend - prime swing trade setup
-        dist_50 = result.get("dist_50")
-        if result["trend"] == "Pullback in Uptrend":
-            if dist_50 is not None:
-                if -2 < dist_50 <= 0:
+        rsi_floor_delta = result.get("rsi_floor_delta")
+        days_since_low = result.get("days_since_low")
+
+        if drawdown <= -20 and days_since_low is not None:
+            # ---- Recovery track ----
+            signals.append(f"Recovery candidate ({drawdown:.0f}% off 52w high)")
+
+            # Core: force of selling at the newest swing low vs the prior one
+            if rsi_floor_delta is not None:
+                if rsi_floor_delta >= 5:
                     score += 30
-                    signals.append("At 50-MA support (prime entry)")
-                elif -5 < dist_50 < -2:
+                    signals.append(f"RSI floor rising strongly (+{rsi_floor_delta:.0f})")
+                elif rsi_floor_delta > 0:
                     score += 20
-                    signals.append("Near 50-MA support")
-        elif result["trend"] == "Uptrend":
-            if dist_50 is not None and 0 < dist_50 < 5:
+                    signals.append(f"RSI floor rising (+{rsi_floor_delta:.0f})")
+                elif rsi_floor_delta <= -5:
+                    score -= 30
+                    signals.append(f"RSI floor falling ({rsi_floor_delta:.0f})")
+                else:
+                    score -= 20
+                    signals.append(f"RSI floor slipping ({rsi_floor_delta:.0f})")
+
+            # Core: undercut trajectory. Acceleration is only bearish when the
+            # RSI floor is ALSO falling — a big final undercut on rising RSI
+            # is the capitulation-flush shape of an exhaustion turn (ESTC).
+            undercut_decel = result.get("undercut_decelerating")
+            if undercut_decel is True:
                 score += 15
-                signals.append("Uptrend, near MA")
+                signals.append("Undercuts shrinking")
+            elif (
+                undercut_decel is False
+                and rsi_floor_delta is not None
+                and rsi_floor_delta < 0
+            ):
+                score -= 15
+                signals.append("Undercuts deepening")
 
-        # RSI signals
-        rsi = result.get("rsi", 50)
-        if rsi < 30:
-            score += 20
-            signals.append(f"Oversold (RSI {rsi:.0f})")
-        elif rsi < 40:
-            score += 10
-            signals.append(f"RSI low ({rsi:.0f})")
-        elif rsi > 75:
-            score -= 15
-            signals.append(f"Overbought (RSI {rsi:.0f})")
-        elif rsi > 65:
-            score -= 5
-            signals.append(f"RSI elevated ({rsi:.0f})")
-
-        # Low in 52-week range (value zone)
-        range_pos = result.get("range_position", 50)
-        if range_pos < 25:
-            score += 25
-            signals.append(f"Deep value ({range_pos:.0f}% of 52w range)")
-        elif range_pos < 40:
-            score += 15
-            signals.append(f"Value zone ({range_pos:.0f}% of 52w range)")
-        elif range_pos > 90:
-            score -= 10
-            signals.append(f"Near 52w high ({range_pos:.0f}%)")
-
-        # Volume signals (only if during market hours)
-        if result.get("volume_pace_reliable", False):
-            pace = result.get("volume_pace", 1.0)
-            if pace > 2.0:
-                score += 20
-                signals.append(f"Heavy volume ({pace:.1f}x pace)")
-            elif pace > 1.5:
+            # Core: is the bounce off the low holding or fading back into it?
+            post_low_trend = result.get("post_low_trend")
+            if post_low_trend == "rising":
                 score += 15
-                signals.append(f"High volume ({pace:.1f}x pace)")
-            elif pace > 1.2:
-                score += 5
-                signals.append(f"Above avg volume ({pace:.1f}x)")
+                signals.append("Higher 10d lows since bottom")
+            elif post_low_trend == "fading":
+                score -= 15
+                signals.append("Bounce fading back toward low")
+
+            # Confirmations
+            hv_vs_peak = result.get("hv_vs_peak")
+            if hv_vs_peak is not None and hv_vs_peak <= 60:
+                score += 10
+                signals.append(f"Volatility draining ({hv_vs_peak:.0f}% of 90d peak)")
+
+            retests = result.get("retests_held") or 0
+            if retests >= 1:
+                score += 10
+                plural = "s" if retests > 1 else ""
+                signals.append(f"Held {retests} retest{plural} of the low")
+
+            reclaim = result.get("reclaim_streak") or 0
+            if reclaim >= 3:
+                score += 10
+                signals.append(f"{reclaim} closes above 20-MA")
+
+            # Label from core character, before the liquidity bonus — a mega
+            # cap knife is still a knife.
+            if post_low_trend == "fading":
+                setup = "Fading bounce"
+            elif score < 0:
+                setup = "Knife"
+            elif days_since_low <= 15:
+                setup = "Exhaustion turn"
+            else:
+                setup = "Basing glide"
+        else:
+            # ---- Uptrend-pullback track ----
+            dist_50 = result.get("dist_50")
+            if result["trend"] == "Pullback in Uptrend":
+                setup = "Uptrend pullback"
+                if dist_50 is not None:
+                    if -2 < dist_50 <= 0:
+                        score += 30
+                        signals.append("At 50-MA support (prime entry)")
+                    elif -5 < dist_50 < -2:
+                        score += 20
+                        signals.append("Near 50-MA support")
+            elif result["trend"] == "Uptrend":
+                if dist_50 is not None and 0 < dist_50 < 5:
+                    score += 15
+                    signals.append("Uptrend, near MA")
 
         # Liquidity bonus
         market_cap = result.get("market_cap", 0)
@@ -220,7 +278,7 @@ class StockScanner:
             score += 5
             signals.append("Large cap")
 
-        # Earnings proximity warning (informational, affects options risk)
+        # Earnings proximity warning (informational)
         days_to_earnings = result.get("days_to_earnings")
         if days_to_earnings is not None:
             earnings_date = result.get("earnings_date", "")
@@ -231,7 +289,7 @@ class StockScanner:
             elif days_to_earnings <= 30:
                 signals.append(f"Earnings {earnings_date}")
 
-        return score, signals
+        return score, signals, setup
 
     async def run_scan(
         self,
@@ -363,9 +421,10 @@ class StockScanner:
 
         # Stage 3: Score and rank
         for result in results:
-            score, signals = self._score_opportunity(result)
+            score, signals, setup = self._score_opportunity(result)
             result["score"] = score
             result["signals"] = signals
+            result["setup"] = setup
 
         sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
 
@@ -391,9 +450,10 @@ class StockScanner:
 
         result = await self._process_ticker(ticker, quote)
         if result:
-            score, signals = self._score_opportunity(result)
+            score, signals, setup = self._score_opportunity(result)
             result["score"] = score
             result["signals"] = signals
+            result["setup"] = setup
             result["change"] = quote.get("change", 0)
             result["change_pct"] = quote.get(
                 "changesPercentage", quote.get("changePercentage", 0)

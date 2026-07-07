@@ -62,6 +62,17 @@ class ScanResultItem(BaseModel):
     volume_ratio: float
     rsi: float
     momentum_10d: float
+    # Recovery-track metrics (issue #49) — None when the stock has <60 bars
+    # of history or the metric is undefined (e.g. <2 swing lows).
+    setup: Optional[str] = None
+    days_since_low: Optional[int] = None
+    pct_above_low: Optional[float] = None
+    rsi_floor_delta: Optional[float] = None
+    undercut_decelerating: Optional[bool] = None
+    post_low_trend: Optional[str] = None
+    retests_held: Optional[int] = None
+    hv_vs_peak: Optional[float] = None
+    reclaim_streak: Optional[int] = None
     score: int
     signals: list[str]
 

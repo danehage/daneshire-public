@@ -8,16 +8,26 @@ import EarningsCard from "../components/EarningsCard";
 function SignalBadge({ signal }) {
   let colorClass = "bg-warm-white text-dark-brown border-light-brown";
 
-  if (signal.includes("HV") || signal.includes("volatility")) {
-    colorClass = "bg-warning text-warm-white border-ink";
-  } else if (signal.includes("Oversold") || signal.includes("RSI low")) {
+  if (
+    signal.includes("rising") ||
+    signal.includes("shrinking") ||
+    signal.includes("Higher") ||
+    signal.includes("Held") ||
+    signal.includes("draining") ||
+    signal.includes("closes above")
+  ) {
     colorClass = "bg-success text-warm-white border-ink";
-  } else if (signal.includes("Overbought") || signal.includes("RSI elevated")) {
+  } else if (
+    signal.includes("falling") ||
+    signal.includes("slipping") ||
+    signal.includes("deepening") ||
+    signal.includes("fading")
+  ) {
     colorClass = "bg-error text-warm-white border-ink";
   } else if (signal.includes("support") || signal.includes("Uptrend")) {
     colorClass = "bg-accent text-warm-white border-ink";
-  } else if (signal.includes("value") || signal.includes("Deep")) {
-    colorClass = "bg-success text-warm-white border-ink";
+  } else if (signal.includes("Recovery candidate")) {
+    colorClass = "bg-warning text-warm-white border-ink";
   } else if (signal.includes("cap") || signal.includes("liquid")) {
     colorClass = "bg-light-brown text-warm-white border-ink";
   }
@@ -27,6 +37,29 @@ function SignalBadge({ signal }) {
       className={`inline-block text-xs px-2 py-0.5 border ${colorClass} mr-1 mb-1`}
     >
       {signal}
+    </span>
+  );
+}
+
+function SetupBadge({ setup, daysSinceLow }) {
+  if (!setup) return null;
+
+  const colorClass =
+    setup === "Knife"
+      ? "bg-error text-warm-white"
+      : setup === "Fading bounce"
+      ? "bg-warning text-warm-white"
+      : setup === "Uptrend pullback"
+      ? "bg-accent text-warm-white"
+      : "bg-success text-warm-white"; // Exhaustion turn / Basing glide
+
+  return (
+    <span
+      className={`px-3 py-1 text-sm font-medium border-2 border-ink whitespace-nowrap ${colorClass}`}
+    >
+      {setup}
+      {setup === "Fading bounce" && " ⚠"}
+      {daysSinceLow != null && ` · ${daysSinceLow}d off low`}
     </span>
   );
 }
@@ -147,6 +180,10 @@ export default function TickerDetailPage() {
           <div className="flex items-center gap-4 mb-2">
             <h1 className="font-serif text-4xl text-ink">{analysis.ticker}</h1>
             <TrendBadge trend={analysis.trend} />
+            <SetupBadge
+              setup={analysis.setup}
+              daysSinceLow={analysis.days_since_low}
+            />
           </div>
           <div className="flex items-baseline gap-4">
             <span className="text-3xl font-mono text-ink">
