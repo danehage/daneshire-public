@@ -41,7 +41,14 @@ issues [#48](https://github.com/danehage/daneshire/issues/48),
 ## Open questions
 
 - Stage 1 price floor value (proposed $20–30) — Dane hasn't picked. (#48)
-- New scoring weight design — discussion in progress; per CLAUDE.md, weights
-  don't change without it. (#49)
 - Whether the "not interested" blocklist is wanted at all, and its UX. (#51)
 - Whether QUICK_SCAN keeps its meme-era entries or gets re-curated. (#48)
+
+## Resolved 2026-07-07 (later the same day)
+
+- **Scoring design confirmed and posted to #49** (now `ready-for-agent`).
+  Validated against 5 historical reference setups (3 wins, 1 loss, 1
+  control. Core insight: score stabilization evidence (RSI divergence across
+  swing lows — 5/5 separator — undercut deceleration, bounce holding vs
+  fading), never damage itself. Old score ranked AMC above all three winners.
+  Full structure, weights envelope, and test fixtures in the #49 comment.
