@@ -24,7 +24,7 @@ from app.services.market import MarketDataError, get_market
 
 TEST_SECRET = "test-scheduler-secret-screen"
 
-_TODAY = date(2026, 5, 27)
+_TODAY = date.today()
 _FUTURE = _TODAY + timedelta(days=7)
 _PAST = _TODAY - timedelta(days=90)
 _PAST2 = _TODAY - timedelta(days=180)
