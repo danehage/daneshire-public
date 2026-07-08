@@ -20,7 +20,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Generic, Optional, TypeVar
 
@@ -208,6 +208,7 @@ HISTORY_TTL_SECONDS = 60 * 60.0
 EARNINGS_TTL_SECONDS = 6 * 60 * 60.0  # 6 hours
 IV_TTL_SECONDS = 60 * 60.0  # 1 hour, per ADR-0002
 REALIZED_MOVE_TTL_SECONDS = 24 * 60 * 60.0  # 24h — computed from stable historical data
+CONTEXT_TTL_SECONDS = 24 * 60 * 60.0  # 24h — profile/ratios/news change at most daily
 
 
 class MarketData:
@@ -230,6 +231,7 @@ class MarketData:
         earnings_ttl: float = EARNINGS_TTL_SECONDS,
         iv_ttl: float = IV_TTL_SECONDS,
         realized_move_ttl: float = REALIZED_MOVE_TTL_SECONDS,
+        context_ttl: float = CONTEXT_TTL_SECONDS,
         clock=time.monotonic,
     ):
         self.client = client
@@ -253,6 +255,9 @@ class MarketData:
         )
         self._realized_move_cache: _TTLSingleflightCache[list] = _TTLSingleflightCache(
             realized_move_ttl, clock=clock
+        )
+        self._context_cache: _TTLSingleflightCache[dict] = _TTLSingleflightCache(
+            context_ttl, clock=clock
         )
 
     # -- quotes -------------------------------------------------------------
@@ -496,6 +501,159 @@ class MarketData:
             for report_date, report_time in events
         ]
 
+    # -- ticker context (fundamentals + news) -------------------------------
+
+    async def ticker_context(self, ticker: str) -> dict:
+        """Fundamental context block for the ticker detail page.
+
+        Fetches company profile, key metrics TTM, quarterly income (4Q), and
+        recent news in parallel. Results are cached with a 24h TTL so the
+        page loads fast on repeated visits and FMP call cost stays minimal.
+
+        Fetch on click only — never called at scan time (scanner cost unchanged).
+        """
+        symbol = ticker.upper()
+        return await self._context_cache.get_or_fetch(
+            ("context", symbol),
+            lambda: self._fetch_ticker_context(symbol),
+        )
+
+    async def _fetch_ticker_context(self, ticker: str) -> dict:
+        results = await asyncio.gather(
+            self.client.get_company_profile(ticker),
+            self.client.get_ratios_ttm(ticker),
+            self.client.get_income_statements(ticker, limit=4),
+            self.client.get_stock_news(ticker, limit=5),
+            self.client.get_earnings_date(ticker),
+            return_exceptions=True,
+        )
+        profile_raw, ratios_raw, income_raw, news_raw, earnings_raw = results
+
+        # --- profile ---------------------------------------------------
+        # The client methods already unwrap FMP's single-element list and
+        # return a dict (or None / an exception via gather).
+        profile: dict = profile_raw if isinstance(profile_raw, dict) else {}
+        if not profile:
+            # No profile = FMP doesn't know the symbol. Raise instead of
+            # caching an all-None context so the route's 404 actually fires.
+            raise TickerNotFound(f"No profile data for {ticker}")
+
+        company_name = profile.get("companyName") or None
+        sector = profile.get("sector") or None
+        description = profile.get("description") or None
+
+        current_price: Optional[float] = None
+        high_52w: Optional[float] = None
+        raw_price = profile.get("price")
+        if raw_price is not None:
+            try:
+                current_price = float(raw_price) or None
+            except (ValueError, TypeError):
+                pass
+        range_str = profile.get("range", "") or ""
+        if "-" in range_str:
+            parts = range_str.split("-")
+            if len(parts) >= 2:
+                try:
+                    high_52w = float(parts[-1])
+                except ValueError:
+                    pass
+
+        drawdown_from_52w_high_pct: Optional[float] = None
+        if current_price and high_52w and high_52w > 0:
+            drawdown_from_52w_high_pct = round(
+                (high_52w - current_price) / high_52w * 100, 1
+            )
+
+        # --- TTM ratios --------------------------------------------------
+        ratios: dict = ratios_raw if isinstance(ratios_raw, dict) else {}
+
+        net_margin_ttm: Optional[float] = None
+        debt_to_equity: Optional[float] = None
+        nm = ratios.get("netProfitMarginTTM")
+        de = ratios.get("debtToEquityRatioTTM")
+        if nm is not None:
+            try:
+                net_margin_ttm = round(float(nm) * 100, 1)
+            except (ValueError, TypeError):
+                pass
+        if de is not None:
+            try:
+                debt_to_equity = round(float(de), 2)
+            except (ValueError, TypeError):
+                pass
+
+        # --- income statements (most recent first → reverse for display) ---
+        quarterly_financials: list[dict] = []
+        income_stmts: list[dict] = income_raw if isinstance(income_raw, list) else []
+        chron = list(reversed(income_stmts[:4]))
+        prev_revenue: Optional[int] = None
+        prev_eps: Optional[float] = None
+        for stmt in chron:
+            raw_rev = stmt.get("revenue")
+            raw_eps = stmt.get("eps")
+            revenue: Optional[int] = int(float(raw_rev)) if raw_rev else None
+            eps: Optional[float] = float(raw_eps) if raw_eps else None
+            # /stable/income-statement has no netIncomeRatio — compute it.
+            raw_ni = stmt.get("netIncome")
+            net_margin: Optional[float] = (
+                round(float(raw_ni) / float(raw_rev) * 100, 1)
+                if raw_ni is not None and raw_rev
+                else None
+            )
+            rev_change: Optional[float] = None
+            if revenue and prev_revenue:
+                rev_change = round((revenue - prev_revenue) / abs(prev_revenue) * 100, 1)
+            eps_change: Optional[float] = None
+            if eps is not None and prev_eps is not None and prev_eps != 0.0:
+                eps_change = round((eps - prev_eps) / abs(prev_eps) * 100, 1)
+            quarterly_financials.append({
+                "quarter": _quarter_label(stmt.get("date", "")),
+                "revenue": revenue,
+                "revenue_pct_change": rev_change,
+                "eps": eps,
+                "eps_pct_change": eps_change,
+                "net_margin": net_margin,
+            })
+            prev_revenue = revenue
+            prev_eps = eps
+
+        # --- news ----------------------------------------------------------
+        headlines: list[dict] = []
+        news_list: list[dict] = news_raw if isinstance(news_raw, list) else []
+        for article in news_list[:5]:
+            if not isinstance(article, dict):
+                continue
+            headlines.append({
+                "title": article.get("title") or "",
+                "url": article.get("url") or "",
+                "published_at": article.get("publishedDate") or "",
+                "source": article.get("site") or "",
+            })
+
+        # --- next earnings -------------------------------------------------
+        next_earnings_date: Optional[str] = None
+        days_to_earnings: Optional[int] = None
+        if isinstance(earnings_raw, dict):
+            next_earnings_date = earnings_raw.get("date")
+            days_to_earnings = earnings_raw.get("days_until")
+
+        return {
+            "ticker": ticker,
+            "company_name": company_name,
+            "sector": sector,
+            "description": description,
+            "current_price": current_price,
+            "high_52w": high_52w,
+            "drawdown_from_52w_high_pct": drawdown_from_52w_high_pct,
+            "quarterly_financials": quarterly_financials,
+            "net_margin_ttm": net_margin_ttm,
+            "debt_to_equity": debt_to_equity,
+            "next_earnings_date": next_earnings_date,
+            "days_to_earnings": days_to_earnings,
+            "headlines": headlines,
+        }
+
     # -- helpers ------------------------------------------------------------
 
     async def _gather_one(
@@ -655,6 +813,21 @@ def _normalise_bar(raw: dict) -> dict[str, Any]:
         "close": float(raw.get("close") or 0.0),
         "volume": int(raw.get("volume") or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _quarter_label(date_str: str) -> str:
+    """Convert 'YYYY-MM-DD' to 'Q1 YYYY' etc."""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        quarter = (dt.month - 1) // 3 + 1
+        return f"Q{quarter} {dt.year}"
+    except (ValueError, TypeError):
+        return date_str or ""
 
 
 # ---------------------------------------------------------------------------

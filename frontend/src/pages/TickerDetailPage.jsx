@@ -4,6 +4,7 @@ import { useCreateWatchlistItem } from "../hooks/useWatchlist";
 import { useRole } from "../hooks/useMe";
 import TargetsAndJournal from "../components/TargetsAndJournal";
 import EarningsCard from "../components/EarningsCard";
+import ContextBlock from "../components/ContextBlock";
 
 function SignalBadge({ signal }) {
   let colorClass = "bg-warm-white text-dark-brown border-light-brown";
@@ -220,6 +221,9 @@ export default function TickerDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Context block — fundamentals + Gemini narrative */}
+      <ContextBlock ticker={symbol?.toUpperCase()} />
 
       {/* Signals */}
       <div className="border-2 border-ink shadow-hard bg-warm-white p-6">

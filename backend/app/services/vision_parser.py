@@ -256,6 +256,18 @@ class GeminiVisionParser:
             logger.exception("Gemini parse failed")
             raise VisionUpstreamError(str(exc)) from exc
 
+    async def generate_text(self, prompt: str) -> str:
+        """Free-form text generation — used for the ticker context narrative."""
+        try:
+            model = self._genai.GenerativeModel(self._model_name)
+            response = await model.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "quota" in msg or "rate" in msg or "429" in msg:
+                raise VisionRateLimited(str(exc)) from exc
+            raise VisionUpstreamError(str(exc)) from exc
+
     async def _generate_and_validate(self, model, prompt_parts: list, schema_cls):
         """Call Gemini and validate the response, retrying once on schema errors.
 

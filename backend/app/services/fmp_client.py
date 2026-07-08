@@ -292,6 +292,85 @@ class FMPClient:
             logger.error(f"Error fetching S&P 500 constituents: {e}")
             return []
 
+    async def get_company_profile(self, ticker: str) -> Optional[dict]:
+        """Fetch company profile: name, sector, description, 52w range.
+
+        Uses the /stable/ API — the /api/v3/ endpoints are legacy-gated
+        (subscriptions before 2025-08-31 only) and return an error payload
+        on this plan.
+        """
+        try:
+            url = f"{self.BASE_URL}/stable/profile?symbol={ticker}&apikey={self.api_key}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await self._request_with_retry(url, client)
+                if response:
+                    data = response.json()
+                    if isinstance(data, list) and data:
+                        return data[0]
+            return None
+        except httpx.RequestError as e:
+            logger.debug(f"Error fetching profile for {ticker}: {e}")
+            return None
+
+    async def get_ratios_ttm(self, ticker: str) -> Optional[dict]:
+        """Fetch TTM ratios: netProfitMarginTTM, debtToEquityRatioTTM.
+
+        Note: /stable/key-metrics-ttm no longer carries margin or D/E —
+        those fields moved to /stable/ratios-ttm.
+        """
+        try:
+            url = f"{self.BASE_URL}/stable/ratios-ttm?symbol={ticker}&apikey={self.api_key}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await self._request_with_retry(url, client)
+                if response:
+                    data = response.json()
+                    if isinstance(data, list) and data:
+                        return data[0]
+            return None
+        except httpx.RequestError as e:
+            logger.debug(f"Error fetching TTM ratios for {ticker}: {e}")
+            return None
+
+    async def get_income_statements(
+        self, ticker: str, limit: int = 4
+    ) -> Optional[list[dict]]:
+        """Fetch quarterly income statements (most recent first)."""
+        try:
+            url = (
+                f"{self.BASE_URL}/stable/income-statement"
+                f"?symbol={ticker}&period=quarter&limit={limit}&apikey={self.api_key}"
+            )
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await self._request_with_retry(url, client)
+                if response:
+                    data = response.json()
+                    if isinstance(data, list):
+                        return data[:limit]
+            return None
+        except httpx.RequestError as e:
+            logger.debug(f"Error fetching income statements for {ticker}: {e}")
+            return None
+
+    async def get_stock_news(
+        self, ticker: str, limit: int = 5
+    ) -> Optional[list[dict]]:
+        """Fetch recent news headlines for a ticker."""
+        try:
+            url = (
+                f"{self.BASE_URL}/stable/news/stock"
+                f"?symbols={ticker}&limit={limit}&apikey={self.api_key}"
+            )
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await self._request_with_retry(url, client)
+                if response:
+                    data = response.json()
+                    if isinstance(data, list):
+                        return data[:limit]
+            return None
+        except httpx.RequestError as e:
+            logger.debug(f"Error fetching news for {ticker}: {e}")
+            return None
+
     async def get_earnings_date(self, ticker: str) -> Optional[dict]:
         """
         Fetch upcoming earnings date for a ticker.

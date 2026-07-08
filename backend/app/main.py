@@ -27,9 +27,11 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     INTERNAL_PREFIX = "/api/internal/"
 
     # API surface reachable with guest credentials: scanner + earnings
-    # market data. Everything else under /api/ is owner-only. Non-/api
-    # paths (the static frontend) are always reachable once authenticated.
-    GUEST_ALLOWED_API_PREFIXES = ("/api/me", "/api/scan", "/api/earnings")
+    # market data + the read-only ticker context block (guests reach the
+    # ticker detail page from scan results). Everything else under /api/
+    # is owner-only. Non-/api paths (the static frontend) are always
+    # reachable once authenticated.
+    GUEST_ALLOWED_API_PREFIXES = ("/api/me", "/api/scan", "/api/earnings", "/api/ticker")
     GUEST_DENIED_API_PREFIXES = ("/api/earnings/trades",)
 
     # Rate limiting: max failed attempts per IP before lockout
@@ -143,6 +145,7 @@ from app.routes import (
     dashboard_router,
     portfolio_router,
     earnings_router,
+    ticker_router,
 )
 from app.services.fmp_client import FMPClient
 from app.services.finnhub_client import FinnhubClient
@@ -214,6 +217,7 @@ app.include_router(internal_router)
 app.include_router(dashboard_router)
 app.include_router(portfolio_router)
 app.include_router(earnings_router)
+app.include_router(ticker_router)
 
 
 @app.get("/api/health")
