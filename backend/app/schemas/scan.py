@@ -20,7 +20,7 @@ class UniverseInfo(BaseModel):
 class ScanRequest(BaseModel):
     """Request to start a new scan."""
 
-    universe: str = "quick"  # quick, robinhood, sp500_sample, sp500
+    universe: str = "combined"  # combined, sp500, sp400, sp500_sample
     use_cache: bool = True
 
 

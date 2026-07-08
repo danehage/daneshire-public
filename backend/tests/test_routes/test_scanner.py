@@ -55,7 +55,7 @@ async def test_execute_returns_immediately_and_streams_complete(client):
     app.dependency_overrides[get_market] = lambda: fake
 
     # /execute returns right away with a scan_id, not after the scan finishes.
-    res = await client.post("/api/scan/execute", json={"universe": "quick"})
+    res = await client.post("/api/scan/execute", json={"universe": "sp500_sample"})
     assert res.status_code == 200
     body = res.json()
     scan_id = body["scan_id"]

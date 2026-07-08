@@ -38,10 +38,10 @@ _scan_tasks: set[asyncio.Task] = set()
 async def list_universes():
     """List available stock universes with their sizes."""
     descriptions = {
-        "quick": "High volume, popular stocks for fast daily screening",
-        "robinhood": "Most popular retail trading stocks",
+        "combined": "S&P 500 + S&P 400 — the complete picture (~900 stocks)",
+        "sp500": "Full S&P 500 constituents (~500 stocks)",
+        "sp400": "S&P MidCap 400 — quality mid-caps (~400 stocks)",
         "sp500_sample": "100 representative large cap S&P 500 stocks",
-        "sp500": "Full S&P 500 constituents (503 stocks)",
     }
 
     return [

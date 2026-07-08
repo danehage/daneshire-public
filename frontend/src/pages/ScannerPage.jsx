@@ -322,7 +322,7 @@ function ResultsTable({ results, onAddToWatchlist, addingTicker }) {
 }
 
 export default function ScannerPage() {
-  const [selectedUniverse, setSelectedUniverse] = useState("quick");
+  const [selectedUniverse, setSelectedUniverse] = useState("combined");
   const [useCache, setUseCache] = useState(true);
   const [addingTicker, setAddingTicker] = useState(null);
 

@@ -337,8 +337,8 @@ class StockScanner:
                 volume = quote.get("volume", 0)
                 market_cap = quote.get("marketCap", 0)
 
-                # Basic filters: tradeable stocks only
-                if price >= 5 and volume > 10000 and market_cap > 1_000_000_000:
+                # Basic filters: quality names only (Daneshire thesis: higher-priced stocks)
+                if price >= 20 and volume > 10000 and market_cap > 1_000_000_000:
                     survivors[ticker] = quote
 
             logger.info(f"{len(survivors)} stocks passed Stage 1 filters")

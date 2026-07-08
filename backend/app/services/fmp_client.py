@@ -22,8 +22,8 @@ class FMPClient:
     BASE_URL = "https://financialmodelingprep.com"
 
     # Rate limiting: FMP allows ~300/min on free tier, ~750/min on starter
-    # We'll be conservative with 200/min = ~3.3 req/sec
-    REQUESTS_PER_SECOND = 3.0
+    # Plan confirmed at 300 calls/min (2026-07-08); 4.5/s = 270/min headroom
+    REQUESTS_PER_SECOND = 4.5
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0  # seconds
 
@@ -377,7 +377,10 @@ class FMPClient:
         Returns dict with 'date' and 'days_until' or None if not found.
         """
         try:
-            url = f"{self.BASE_URL}/api/v3/earning_calendar?symbol={ticker}&apikey={self.api_key}"
+            # /stable/earnings replaces the legacy-gated /api/v3/earning_calendar
+            # (dead on this plan since the 2025-08-31 cutoff — every call
+            # returned an error payload, so earnings dates were silently None).
+            url = f"{self.BASE_URL}/stable/earnings?symbol={ticker}&limit=8&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(url)
 
@@ -385,23 +388,27 @@ class FMPClient:
                     data = response.json()
                     if isinstance(data, list) and len(data) > 0:
                         today = date.today()
-                        # Find the next upcoming earnings date
+                        # Entries come date-descending (farthest future first),
+                        # so collect all upcoming dates and take the nearest.
+                        upcoming: list[date] = []
                         for entry in data:
                             earnings_date_str = entry.get("date")
-                            if earnings_date_str:
-                                try:
-                                    earnings_date = datetime.strptime(
-                                        earnings_date_str, "%Y-%m-%d"
-                                    ).date()
-                                    days_until = (earnings_date - today).days
-                                    # Return if earnings is upcoming (within 60 days)
-                                    if days_until >= 0:
-                                        return {
-                                            "date": earnings_date_str,
-                                            "days_until": days_until,
-                                        }
-                                except ValueError:
-                                    continue
+                            if not earnings_date_str:
+                                continue
+                            try:
+                                earnings_date = datetime.strptime(
+                                    earnings_date_str, "%Y-%m-%d"
+                                ).date()
+                            except ValueError:
+                                continue
+                            if (earnings_date - today).days >= 0:
+                                upcoming.append(earnings_date)
+                        if upcoming:
+                            nearest = min(upcoming)
+                            return {
+                                "date": nearest.isoformat(),
+                                "days_until": (nearest - today).days,
+                            }
 
                 elif response.status_code == 429:
                     logger.warning(f"Rate limited on earnings for {ticker}")

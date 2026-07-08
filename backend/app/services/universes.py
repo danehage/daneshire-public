@@ -3,41 +3,6 @@ Stock Universe Definitions
 Curated lists of tickers for different scanning strategies
 """
 
-# Quick scan - High volume, popular stocks for fast daily screening
-QUICK_SCAN = [
-    # High volume tech
-    "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "GOOGL", "AMZN", "META",
-    # High IV options plays
-    "NFLX", "COIN", "PLTR", "RIVN", "SOFI", "RBLX", "HOOD",
-    # Stable dividend payers
-    "KO", "PG", "JNJ", "PFE", "XOM", "CVX",
-    # Banks
-    "JPM", "BAC", "WFC", "C", "GS",
-    # Popular retail
-    "DIS", "NKE", "SBUX", "MCD", "WMT", "TGT", "COST",
-    # Semiconductors
-    "INTC", "QCOM", "MU", "AVGO", "LRCX", "AMAT",
-    # Healthcare
-    "UNH", "LLY", "ABBV", "TMO", "ABT",
-    # Finance
-    "V", "MA", "PYPL", "SQ",
-]
-
-# Robinhood 100 - Most popular retail trading stocks
-ROBINHOOD_100 = [
-    "TSLA", "NVDA", "AAPL", "AMD", "PLTR", "SOFI", "F", "NIO", "RIVN", "LCID",
-    "MARA", "RIOT", "COIN", "HOOD", "RBLX", "DKNG", "UBER", "LYFT", "DASH", "ABNB",
-    "MSFT", "GOOGL", "AMZN", "META", "NFLX", "DIS", "PYPL", "SQ", "SHOP", "SNAP",
-    "PINS", "SPOT", "ZM", "DOCU", "TWLO", "SNOW", "CRWD", "NET", "DDOG", "OKTA",
-    "MRNA", "BNTX", "PFE", "JNJ", "ABBV", "GILD", "BIIB", "VRTX", "REGN", "AMGN",
-    "FSR", "CHPT", "BLNK", "PLUG", "FCEL", "ENPH", "SEDG", "RUN",
-    "AFRM", "UPST", "V", "MA", "JPM",
-    "WMT", "TGT", "COST", "HD", "LOW", "ETSY", "W", "CHWY", "CVNA",
-    "EA", "TTWO", "ATVI", "U", "PENN", "MGM",
-    "INTC", "TSM", "QCOM", "MU", "AVGO", "ARM", "MRVL", "ON",
-    "AAL", "DAL", "UAL", "LUV", "SAVE", "JBLU", "BKNG", "EXPE",
-]
-
 # S&P 500 Sample - 100 representative large caps
 SP500_SAMPLE = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK.B",
@@ -110,25 +75,74 @@ SP500_FULL = [
     "ZBRA", "ZBH", "ZTS",
 ]
 
-
-# Universe name -> ticker list mapping
-UNIVERSES = {
-    "quick": QUICK_SCAN,
-    "robinhood": ROBINHOOD_100,
-    "sp500_sample": SP500_SAMPLE,
-    "sp500": SP500_FULL,
-}
-
-
-def get_universe(name: str) -> list[str]:
-    """Get ticker list by universe name."""
-    return UNIVERSES.get(name, QUICK_SCAN)
+# S&P MidCap 400 constituents (fetched from the public constituent list
+# 2026-07-08; refresh the same way when the index reconstitutes).
+# Disjoint from S&P 500 by construction. MOG.A excluded: symbol-restricted
+# on our FMP plan, would burn a dead API call every scan. 399 names.
+SP400_FULL = [
+    "AA", "AAL", "AAON", "ACI", "ACM", "ADC", "AEIS", "AFG", "AGCO", "AHR",
+    "AIT", "ALGM", "ALK", "ALLY", "ALSN", "ALV", "AM", "AMG", "AMH", "AMKR",
+    "AN", "ANF", "APG", "APPF", "AR", "ARMK", "ARW", "ARWR", "ASB", "ASH",
+    "ATI", "ATR", "AVAV", "AVNT", "AVT", "AVTR", "AXTA", "AYI", "BAH", "BBWI",
+    "BC", "BCO", "BDC", "BHF", "BILL", "BIO", "BJ", "BKH", "BLD", "BMRN",
+    "BRKR", "BROS", "BRX", "BSY", "BURL", "BWA", "BWXT", "BYD", "CACI", "CAR",
+    "CART", "CAVA", "CBSH", "CBT", "CCK", "CDE", "CDP", "CELH", "CFR", "CG",
+    "CGNX", "CHDN", "CHE", "CHH", "CHRD", "CHWY", "CLF", "CLH", "CMC", "CNH",
+    "CNM", "CNO", "CNX", "COKE", "COLB", "COLM", "CPRI", "CR", "CRBG", "CROX",
+    "CRS", "CRUS", "CSL", "CTRE", "CUBE", "CUZ", "CVLT", "CW", "CXT", "CYTK",
+    "DAR", "DBX", "DCI", "DINO", "DKS", "DLB", "DOCN", "DOCS", "DOCU", "DT",
+    "DTM", "DUOL", "DY", "EEFT", "EGP", "EHC", "ELAN", "ELF", "ELS", "ENS",
+    "ENSG", "ENTG", "EPR", "EQH", "ESAB", "ESNT", "EVR", "EWBC", "EXEL", "EXLS",
+    "EXP", "EXPO", "FAF", "FBIN", "FCFS", "FCN", "FFIN", "FHI", "FHN", "FIVE",
+    "FLG", "FLR", "FLS", "FN", "FNB", "FND", "FNF", "FOUR", "FR", "FTI",
+    "G", "GAP", "GATX", "GBCI", "GEF", "GGG", "GHC", "GLPI", "GME", "GMED",
+    "GNTX", "GPK", "GTLS", "GWRE", "GXO", "H", "HAE", "HALO", "HGV", "HIMS",
+    "HL", "HLI", "HLNE", "HOG", "HOMB", "HQY", "HR", "HRB", "HWC", "HXL",
+    "IBOC", "IDA", "IDCC", "ILMN", "INGR", "IPGP", "IRT", "ITT", "JAZZ", "JEF",
+    "JHG", "JLL", "KBH", "KBR", "KD", "KEX", "KNF", "KNSL", "KNX", "KRC",
+    "KRG", "KTOS", "LAD", "LAMR", "LEA", "LECO", "LFUS", "LIVN", "LNTH", "LOPE",
+    "LPX", "LSCC", "LSTR", "M", "MANH", "MAT", "MEDP", "MIDD", "MKSI", "MLI",
+    "MMS", "MORN", "MP", "MSA", "MSM", "MTDR", "MTG", "MTN", "MTSI", "MTZ",
+    "MUR", "MUSA", "MZTI", "NBIX", "NEU", "NFG", "NJR", "NLY", "NNN", "NOV",
+    "NOVT", "NSA", "NTNX", "NVST", "NVT", "NWE", "NXST", "NXT", "NYT", "OC",
+    "OGE", "OGS", "OHI", "OKTA", "OLED", "OLLI", "OLN", "ONB", "ONTO", "OPCH",
+    "ORA", "ORI", "OSK", "OVV", "OZK", "P", "PAG", "PATH", "PB", "PBF",
+    "PCTY", "PEGA", "PEN", "PFGC", "PII", "PINS", "PK", "PLNT", "PNFP", "POR",
+    "POST", "PPC", "PR", "PRI", "PSN", "PVH", "QLYS", "R", "RBA", "RBC",
+    "REXR", "RGA", "RGEN", "RGLD", "RH", "RLI", "RMBS", "RNR", "ROIV", "ROKU",
+    "RPM", "RRC", "RRX", "RS", "RYAN", "RYN", "SAIA", "SAIC", "SAM", "SANM",
+    "SARO", "SBRA", "SCI", "SEIC", "SF", "SFM", "SGI", "SHC", "SIGI", "SIRI",
+    "SITM", "SLAB", "SLGN", "SLM", "SMG", "SMTC", "SN", "SNX", "SOLS", "SON",
+    "SPXC", "SR", "SSB", "SSD", "ST", "STAG", "STRL", "STWD", "SWX", "SYNA",
+    "TCBI", "TEX", "THC", "THG", "THO", "TKR", "TLN", "TMHC", "TNL", "TOL",
+    "TREX", "TRU", "TTC", "TTEK", "TTMI", "TWLO", "TXNM", "TXRH", "UBSI", "UFPI",
+    "UGI", "ULS", "UMBF", "UNM", "USFD", "UTHR", "VAL", "VC", "VFC", "VIAV",
+    "VICR", "VLY", "VMI", "VNO", "VNOM", "VNT", "VOYA", "VVV", "WAL", "WBS",
+    "WCC", "WEX", "WFRD", "WH", "WHR", "WING", "WLK", "WMG", "WMS", "WPC",
+    "WSO", "WTFC", "WTRG", "WTS", "WWD", "XPO", "XRAY", "YETI", "ZION",
+]
 
 
 def get_combined_universe() -> list[str]:
     """
-    Combine S&P 500 + Robinhood 100, remove duplicates.
-    Returns ~550-600 unique tickers sorted alphabetically.
+    Combine S&P 500 + S&P 400, remove duplicates.
+    Returns ~900 unique tickers sorted alphabetically.
     """
-    combined = set(SP500_FULL + ROBINHOOD_100)
+    combined = set(SP500_FULL + SP400_FULL)
     return sorted(list(combined))
+
+
+# Universe name -> ticker list mapping. "combined" is the default scan:
+# Dane wants the complete picture, not a subset (2026-07-08, issue #48).
+UNIVERSES = {
+    "combined": get_combined_universe(),
+    "sp500": SP500_FULL,
+    "sp400": SP400_FULL,
+    "sp500_sample": SP500_SAMPLE,
+}
+
+
+def get_universe(name: str) -> list[str]:
+    """Get ticker list by universe name; empty list for unknown names
+    (the scan route turns that into a 400)."""
+    return UNIVERSES.get(name, [])
