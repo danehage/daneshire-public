@@ -96,6 +96,7 @@ class ScanResultsResponse(BaseModel):
     scanned_at: datetime
     errors: int = 0  # Number of stocks that failed analysis
     warning: Optional[str] = None  # Warning message (e.g., rate limiting)
+    partial: bool = False  # True while the scan is still running (issue #53)
 
 
 # For historical scan storage (future: database models)

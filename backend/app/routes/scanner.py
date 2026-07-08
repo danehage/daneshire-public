@@ -79,6 +79,11 @@ async def execute_scan(
     import uuid
     temp_scan_id = str(uuid.uuid4())
 
+    # Live results list, shared with the scanner: Stage 2 appends each
+    # scored ticker as it completes, so /results can serve partials while
+    # the scan runs (issue #53).
+    live_results: list[dict] = []
+
     # Initialize scan state
     scan_state = {
         "status": "running",
@@ -86,7 +91,7 @@ async def execute_scan(
         "universe_size": len(tickers),
         "started_at": datetime.utcnow(),
         "progress": {"current": 0, "total": 0, "found": 0, "errors": 0},
-        "results": [],
+        "results": live_results,
         "errors": 0,
         "scan_id": temp_scan_id,
         "temp_id": temp_scan_id,
@@ -114,6 +119,7 @@ async def execute_scan(
                 progress_callback=progress_callback,
                 use_cache=request.use_cache,
                 universe=request.universe,
+                results_out=live_results,
             )
             scan_state["results"] = results
             scan_state["status"] = "complete"
@@ -207,7 +213,21 @@ async def get_scan_results(scan_id: str):
     scan_state = _active_scans[scan_id]
 
     if scan_state["status"] == "running":
-        raise HTTPException(status_code=202, detail="Scan still in progress")
+        # Serve a partial, score-sorted snapshot so research can start
+        # while the scan runs (issue #53). Copy before sorting — Stage 2
+        # appends to this list concurrently.
+        partial = sorted(
+            list(scan_state["results"]), key=lambda r: r["score"], reverse=True
+        )
+        return ScanResultsResponse(
+            scan_id=scan_id,
+            universe=scan_state["universe"],
+            total_analyzed=len(partial),
+            results=[ScanResultItem(**r) for r in partial],
+            scanned_at=scan_state["started_at"],
+            errors=scan_state.get("errors", 0),
+            partial=True,
+        )
 
     if scan_state["status"] == "error":
         raise HTTPException(status_code=500, detail=scan_state.get("error", "Scan failed"))

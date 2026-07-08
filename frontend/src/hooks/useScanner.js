@@ -89,11 +89,13 @@ export function useScan() {
     };
   }, [scanId, isScanning, queryClient]);
 
-  // Fetch results when scan is complete
+  // Fetch results: partial snapshots every 10s while the scan runs
+  // (backend returns partial=true, score-sorted), final on completion.
   const { data: results, isLoading: resultsLoading } = useQuery({
     queryKey: ["scanResults", scanId],
     queryFn: () => getScanResults(scanId),
-    enabled: !!scanId && !isScanning,
+    enabled: !!scanId,
+    refetchInterval: isScanning ? 10 * 1000 : false,
     retry: false,
   });
 

@@ -26,7 +26,12 @@ class _FakeScanner:
         self.started = asyncio.Event()
 
     async def run_scan(
-        self, tickers, progress_callback=None, use_cache=True, universe=None
+        self,
+        tickers,
+        progress_callback=None,
+        use_cache=True,
+        universe=None,
+        results_out=None,
     ):
         self.started.set()
         if progress_callback:
@@ -79,3 +84,85 @@ async def test_execute_returns_immediately_and_streams_complete(client):
     results = await client.get(f"/api/scan/{scan_id}/results")
     assert results.status_code == 200
     assert results.json()["total_analyzed"] == 0
+    assert results.json()["partial"] is False
+
+
+def _row(ticker: str, score: int) -> dict:
+    """Minimal dict satisfying ScanResultItem's required fields."""
+    return {
+        "ticker": ticker,
+        "price": 50.0,
+        "market_cap": 5_000_000_000,
+        "volume": 1_000_000,
+        "avg_volume": 900_000,
+        "volume_pace": 1.0,
+        "volume_pace_reliable": False,
+        "trend": "Consolidation",
+        "range_position": 40.0,
+        "high_52w": 80.0,
+        "low_52w": 30.0,
+        "support": 45.0,
+        "resistance": 55.0,
+        "support_type": "recent_low_20d",
+        "resistance_type": "recent_high_20d",
+        "volume_ratio": 1.0,
+        "rsi": 50.0,
+        "momentum_10d": 0.0,
+        "score": score,
+        "signals": [],
+    }
+
+
+class _PausableScanner:
+    """Appends two scored rows to ``results_out``, then blocks until told to
+    finish — so the test can hit /results mid-scan (issue #53)."""
+
+    def __init__(self):
+        self.first_batch_done = asyncio.Event()
+        self.proceed = asyncio.Event()
+
+    async def run_scan(
+        self,
+        tickers,
+        progress_callback=None,
+        use_cache=True,
+        universe=None,
+        results_out=None,
+    ):
+        results_out.append(_row("AAA", 10))
+        results_out.append(_row("BBB", 70))
+        self.first_batch_done.set()
+        await self.proceed.wait()
+        results_out.append(_row("CCC", 40))
+        return ("scan-y", sorted(results_out, key=lambda r: r["score"], reverse=True))
+
+
+@pytest.mark.asyncio
+async def test_results_returns_scored_partials_while_running(client):
+    fake = _FakeMarket()
+    fake.scanner = _PausableScanner()
+    app.dependency_overrides[get_market] = lambda: fake
+
+    res = await client.post("/api/scan/execute", json={"universe": "sp500_sample"})
+    scan_id = res.json()["scan_id"]
+
+    await asyncio.wait_for(fake.scanner.first_batch_done.wait(), timeout=2)
+
+    # Mid-scan: 200 with a score-sorted partial snapshot, not 202.
+    partial = await client.get(f"/api/scan/{scan_id}/results")
+    assert partial.status_code == 200
+    body = partial.json()
+    assert body["partial"] is True
+    assert [r["ticker"] for r in body["results"]] == ["BBB", "AAA"]
+
+    # Let the scan finish; the final payload includes the late row and
+    # drops the partial flag.
+    fake.scanner.proceed.set()
+    for _ in range(40):
+        final = await client.get(f"/api/scan/{scan_id}/results")
+        if final.json()["partial"] is False:
+            break
+        await asyncio.sleep(0.05)
+    body = final.json()
+    assert body["partial"] is False
+    assert [r["ticker"] for r in body["results"]] == ["BBB", "CCC", "AAA"]

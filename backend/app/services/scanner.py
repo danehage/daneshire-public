@@ -297,19 +297,25 @@ class StockScanner:
         progress_callback: Optional[Callable[[dict], Any]] = None,
         use_cache: bool = True,
         universe: str = "custom",
+        results_out: Optional[list] = None,
     ) -> tuple[str, list[dict]]:
         """
         Run a full scan on the given ticker list.
 
         Stage 1: Fast filter using cached quotes
-        Stage 2: Deep analysis with historical data
-        Stage 3: Score and rank results
+        Stage 2: Deep analysis with historical data — each ticker is scored
+                 the moment its analysis completes (scoring is per-ticker),
+                 so partial results are readable mid-scan (issue #53)
+        Stage 3: Rank results
 
         Args:
             tickers: List of ticker symbols to scan
             progress_callback: Optional async callback for progress updates
             use_cache: Whether to use cached Stage 1 data
             universe: Universe name for cache key
+            results_out: Optional caller-owned list; scored results are
+                appended as they land so the caller can serve partials
+                while the scan runs
 
         Returns:
             tuple: (scan_id, list of analyzed stocks sorted by score)
@@ -362,7 +368,7 @@ class StockScanner:
 
         # Stage 2: Deep analysis (parallel with semaphore)
         # Use lower concurrency to avoid rate limits
-        results = []
+        results = results_out if results_out is not None else []
         total = len(survivors)
         completed = 0
         errors = 0
@@ -376,6 +382,13 @@ class StockScanner:
                 try:
                     result = await self._process_ticker(ticker, quote)
                     if result:
+                        # Score immediately — per-ticker, no cross-ticker
+                        # deps — so appended results are complete rows and
+                        # partials can be served mid-scan.
+                        score, signals, setup = self._score_opportunity(result)
+                        result["score"] = score
+                        result["signals"] = signals
+                        result["setup"] = setup
                         results.append(result)
                     else:
                         errors += 1  # Track when we can't process a ticker
@@ -419,13 +432,7 @@ class StockScanner:
             logger.error("No stocks successfully analyzed in Stage 2")
             return scan_id, []
 
-        # Stage 3: Score and rank
-        for result in results:
-            score, signals, setup = self._score_opportunity(result)
-            result["score"] = score
-            result["signals"] = signals
-            result["setup"] = setup
-
+        # Stage 3: Rank (scoring already happened per-ticker in Stage 2)
         sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
 
         if progress_callback:

@@ -430,8 +430,8 @@ export default function ScannerPage() {
         </div>
       )}
 
-      {/* Results */}
-      {results && !isScanning && (
+      {/* Results — partial snapshots stream in while the scan runs */}
+      {results && results.results.length > 0 && (
         <div className="space-y-4">
           {/* Warning banner if there were errors */}
           {results.warning && (
@@ -443,9 +443,16 @@ export default function ScannerPage() {
           <div className="flex items-center justify-between">
             <h2 className="font-serif text-2xl text-ink">
               Results ({results.results.length} opportunities)
+              {results.partial && (
+                <span className="ml-3 align-middle inline-block px-2 py-1 text-xs font-medium uppercase tracking-wide bg-warning text-warm-white border-2 border-ink animate-pulse">
+                  partial — scan running, order may shift
+                </span>
+              )}
             </h2>
             <span className="text-sm text-mid-brown">
-              Scanned {results.total_analyzed} stocks
+              {results.partial
+                ? `${progress?.current ?? results.total_analyzed} of ${progress?.total ?? "?"} analyzed`
+                : `Scanned ${results.total_analyzed} stocks`}
               {results.errors > 0 && (
                 <span className="text-warning ml-1">
                   ({results.errors} failed)
@@ -462,7 +469,7 @@ export default function ScannerPage() {
       )}
 
       {/* Loading results */}
-      {resultsLoading && (
+      {resultsLoading && !results && !isScanning && (
         <div className="text-center py-12 text-mid-brown">
           Loading results...
         </div>
