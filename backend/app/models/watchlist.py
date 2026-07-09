@@ -31,7 +31,9 @@ class WatchlistItem(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="watching"
     )
-    position_type: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    # 20, not 10: the API contract allows 'cash_secured_put' (16 chars) —
+    # VARCHAR(10) made that value a guaranteed 500 (latent until #61's sync).
+    position_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     entry_price: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(12, 4), nullable=True
     )

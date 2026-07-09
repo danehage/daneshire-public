@@ -6,6 +6,7 @@ const navItems = [
   { path: "/", label: "Dashboard", ownerOnly: true },
   { path: "/watchlist", label: "Watchlist", ownerOnly: true },
   { path: "/portfolio", label: "Portfolio", ownerOnly: true },
+  { path: "/trades", label: "Trades", ownerOnly: true },
   { path: "/journal", label: "Journal", ownerOnly: true },
   { path: "/scanner", label: "Scanner" },
   { path: "/earnings", label: "Earnings" },

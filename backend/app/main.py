@@ -146,6 +146,7 @@ from app.routes import (
     portfolio_router,
     earnings_router,
     ticker_router,
+    trade_campaigns_router,
 )
 from app.services.fmp_client import FMPClient
 from app.services.finnhub_client import FinnhubClient
@@ -218,6 +219,7 @@ app.include_router(dashboard_router)
 app.include_router(portfolio_router)
 app.include_router(earnings_router)
 app.include_router(ticker_router)
+app.include_router(trade_campaigns_router)
 
 
 @app.get("/api/health")

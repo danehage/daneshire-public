@@ -5,6 +5,32 @@ import { useRole } from "../hooks/useMe";
 import TargetsAndJournal from "../components/TargetsAndJournal";
 import EarningsCard from "../components/EarningsCard";
 import ContextBlock from "../components/ContextBlock";
+import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
+
+function TradeCampaignsStrip({ ticker }) {
+  const { data: campaigns } = useTradeCampaigns({ ticker });
+  if (!campaigns || campaigns.length === 0) return null;
+  return (
+    <div className="border-2 border-ink bg-warm-white p-4">
+      <h3 className="text-sm font-bold uppercase tracking-wide mb-2">
+        Trade campaigns <span className="font-mono text-mid-brown">(vault)</span>
+      </h3>
+      <div className="flex flex-wrap gap-2">
+        {campaigns.map((c) => (
+          <Link
+            key={c.id}
+            to={`/trades/${c.id}`}
+            className="px-2 py-1 text-xs font-mono border border-ink/40 hover:border-accent hover:text-accent transition-colors"
+          >
+            {c.title} · {c.status}
+            {c.realized_pnl != null &&
+              ` · ${Number(c.realized_pnl) >= 0 ? "+" : ""}$${Number(c.realized_pnl).toLocaleString()}`}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SignalBadge({ signal }) {
   let colorClass = "bg-warm-white text-dark-brown border-light-brown";
@@ -392,6 +418,9 @@ export default function TickerDetailPage() {
 
       {/* Earnings — embedded between analysis and journal (issue #20) */}
       <EarningsCard ticker={symbol.toUpperCase()} />
+
+      {/* Vault trade campaigns (owner-only, synced from DaneBrain — #61) */}
+      {role === "owner" && <TradeCampaignsStrip ticker={symbol.toUpperCase()} />}
 
       {/* Watchlist Data (if on watchlist) */}
       {watchlistItem && (

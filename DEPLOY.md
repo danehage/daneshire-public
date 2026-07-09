@@ -459,6 +459,32 @@ NEON_DATABASE_URL="postgresql+asyncpg://user:pass@neon-host/dbname?sslmode=requi
 
 ---
 
+## 4d. Vault Trade-Journal Sync (runs on Dane's machines, not GCP)
+
+One-way sync of DaneBrain Obsidian trade journals into `/trades` (#61). The
+vault is authoritative; `scripts/sync_vault.py` (stdlib-only Python 3) posts
+the whole vault to `POST /api/trade-campaigns/sync` with owner Basic auth.
+Idempotent — safe on any schedule from any machine with a current vault copy
+(Obsidian Sync keeps Mac + PC identical).
+
+```bash
+# Manual run (credentials fall back to backend/.env AUTH_USERNAME/AUTH_PASSWORD)
+python3 scripts/sync_vault.py
+
+# Install on the Mac (every 20 min via launchd)
+cp scripts/com.daneshire.vault-sync.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.daneshire.vault-sync.plist
+
+# Logs
+tail /tmp/daneshire-vault-sync.log /tmp/daneshire-vault-sync.err
+```
+
+Optional PC install: schedule the same script with Task Scheduler
+(`DANESHIRE_USERNAME`/`DANESHIRE_PASSWORD` env vars for credentials,
+`DANEBRAIN_TRADES_DIR` if the vault lives elsewhere).
+
+---
+
 ## 5. Verify Deployment
 
 ```bash

@@ -71,6 +71,7 @@ async def test_guest_denied_personal_routes(auth_client):
         "/api/alerts",
         "/api/dashboard/summary",
         "/api/earnings/trades",
+        "/api/trade-campaigns",
     ):
         response = await auth_client.get(path, headers=GUEST)
         assert response.status_code == 403, path

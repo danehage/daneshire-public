@@ -9,6 +9,8 @@ import AlertsPage from "./pages/AlertsPage";
 import JournalPage from "./pages/JournalPage";
 import PortfolioPage from "./pages/PortfolioPage";
 import EarningsPage from "./pages/EarningsPage";
+import TradesPage from "./pages/TradesPage";
+import TradeCampaignPage from "./pages/TradeCampaignPage";
 
 function App() {
   return (
@@ -23,6 +25,8 @@ function App() {
           <Route path="/alerts" element={<OwnerRoute><AlertsPage /></OwnerRoute>} />
           <Route path="/journal" element={<OwnerRoute><JournalPage /></OwnerRoute>} />
           <Route path="/portfolio" element={<OwnerRoute><PortfolioPage /></OwnerRoute>} />
+          <Route path="/trades" element={<OwnerRoute><TradesPage /></OwnerRoute>} />
+          <Route path="/trades/:campaignId" element={<OwnerRoute><TradeCampaignPage /></OwnerRoute>} />
         </Routes>
       </Layout>
     </BrowserRouter>

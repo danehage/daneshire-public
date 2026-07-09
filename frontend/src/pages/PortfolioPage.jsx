@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAccounts, usePortfolio, useCommitSnapshot, useCommitTrade, useTrades, useValueHistory } from "../hooks/usePortfolio";
+import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
 import PortfolioHeroCard from "../components/portfolio/PortfolioHeroCard";
 import ValueHistoryChart from "../components/portfolio/ValueHistoryChart";
 import UploadReviewModal from "../components/portfolio/UploadReviewModal";
@@ -58,7 +59,7 @@ function GradeBadge({ grade, stop }) {
   );
 }
 
-function HoldingsTable({ positions, showAccount = false }) {
+function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} }) {
   if (positions.length === 0) {
     return (
       <div className="p-8 text-center text-mid-brown font-mono text-sm">
@@ -102,6 +103,15 @@ function HoldingsTable({ positions, showAccount = false }) {
                     <span className="text-xs text-mid-brown">
                       / {pos.underlying_ticker}
                     </span>
+                  )}
+                  {campaignsByTicker[pos.ticker] && (
+                    <Link
+                      to={`/trades/${campaignsByTicker[pos.ticker]}`}
+                      title="Open trade campaign journal"
+                      className="text-xs font-mono border border-ink/40 px-1 text-mid-brown hover:text-accent hover:border-accent transition-colors"
+                    >
+                      journal
+                    </Link>
                   )}
                 </div>
                 {pos.instrument_type === "option" && (
@@ -530,6 +540,14 @@ export default function PortfolioPage() {
 
   const positions = portfolioData?.positions ?? [];
   const historyPoints = historyData?.points ?? [];
+  const { data: campaigns } = useTradeCampaigns();
+  // Newest open campaign per ticker; the list arrives open-first, newest-first.
+  const campaignsByTicker = {};
+  for (const c of campaigns ?? []) {
+    if (c.status === "open" && !(c.ticker in campaignsByTicker)) {
+      campaignsByTicker[c.ticker] = c.id;
+    }
+  }
 
   return (
     <div>
@@ -597,7 +615,7 @@ export default function PortfolioPage() {
         ) : error ? (
           <div className="p-8 text-center text-red-600 font-mono text-sm">{error.message}</div>
         ) : (
-          <HoldingsTable positions={positions} showAccount={!selectedAccountId} />
+          <HoldingsTable positions={positions} showAccount={!selectedAccountId} campaignsByTicker={campaignsByTicker} />
         )}
       </div>
 

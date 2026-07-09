@@ -8,6 +8,7 @@ from app.routes.dashboard import router as dashboard_router
 from app.routes.portfolio import router as portfolio_router
 from app.routes.earnings import router as earnings_router
 from app.routes.ticker import router as ticker_router
+from app.routes.trade_campaigns import router as trade_campaigns_router
 
 __all__ = [
     "watchlist_router",
@@ -20,4 +21,5 @@ __all__ = [
     "portfolio_router",
     "earnings_router",
     "ticker_router",
+    "trade_campaigns_router",
 ]

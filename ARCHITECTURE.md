@@ -188,6 +188,49 @@ CREATE INDEX idx_scan_results_ticker ON scan_results(ticker);
 CREATE INDEX idx_scan_snapshots_date ON scan_snapshots(scanned_at DESC);
 ```
 
+### trade_campaigns
+
+Trade journals synced one-way from the DaneBrain Obsidian vault (#61). The
+vault is authoritative — the app never writes back. Keyed by `title` (the
+filename stem, e.g. `ACME-2026-04`) because files move `Open/` → `Closed/`.
+
+```sql
+CREATE TABLE trade_campaigns (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title           VARCHAR(100) NOT NULL UNIQUE,   -- filename stem
+    vault_path      TEXT NOT NULL,                  -- current location in vault
+    ticker          VARCHAR(10) NOT NULL,
+    status          VARCHAR(10) NOT NULL,           -- open | closed | archived
+    frontmatter     JSONB NOT NULL DEFAULT '{}',    -- raw parsed frontmatter
+    body            TEXT NOT NULL,                  -- markdown minus frontmatter
+    content_hash    VARCHAR(64) NOT NULL,           -- sha256, skip unchanged
+    opened_on       DATE,                           -- parsed conveniences ↓
+    closed_on       DATE,
+    cost_basis      DECIMAL(12,4),
+    realized_pnl    DECIMAL(14,2),
+    account         VARCHAR(30),
+    strategy        VARCHAR(30),
+    parse_error     TEXT,                           -- per-file, never fails batch
+    synced_at       TIMESTAMPTZ NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT valid_campaign_status CHECK (status IN ('open','closed','archived'))
+);
+
+CREATE INDEX idx_trade_campaigns_ticker ON trade_campaigns(ticker);
+CREATE INDEX idx_trade_campaigns_status ON trade_campaigns(status);
+```
+
+Synced by `scripts/sync_vault.py` (launchd, ~20 min) via
+`POST /api/trade-campaigns/sync` (owner Basic auth). Whole-vault semantics:
+files absent from a sync are soft-archived. Side effect: open campaigns
+upsert their watchlist item (`status=owned`, `entry_date`, `entry_price`) —
+this feeds the #57 plateau-grade run anchoring + gap gauge. Routes:
+`GET /api/trade-campaigns` (list, `?ticker=` filter), `GET
+/api/trade-campaigns/{id}` (detail with body). Frontend: `/trades` +
+`/trades/:campaignId`, linked from Portfolio rows and ticker detail.
+
 ### alert_history
 
 Audit log for alert evaluations. Useful for debugging and for reviewing what fired.
