@@ -297,6 +297,14 @@ POST /api/internal/alerts/run-reminders
 POST /api/internal/alerts/expire-stale
      → daily at midnight
      → marks alerts past expires_at as 'expired'
+
+POST /api/internal/portfolio/run-plateau-checks
+     → every 15 min during market hours (9:30-16:00 ET weekdays)
+     → grades every held equity's sell-side posture (#57): Broken / Climax /
+       Thesis complete / Distribution / Cresting / Running
+     → logs each evaluation to holding_grade_history (append-only)
+     → Pushover on any grade worsening + one daily refresher while
+       deteriorated (high priority for Climax/Broken); silent on recovery
 ```
 
 Secure these with a shared secret header (`X-Scheduler-Secret`) so they can't be hit externally.

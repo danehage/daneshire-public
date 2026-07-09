@@ -232,6 +232,23 @@ gcloud scheduler jobs create http alert-expire-stale \
   --attempt-deadline 60s
 ```
 
+### Plateau Checks — sell-side holding grades (every 15 min, market hours)
+
+Grades every held equity (#57) and pings on grade worsening + one daily
+refresher while deteriorated. The 120s deadline (vs 60s elsewhere) covers the
+per-holding history fetches (~700 days × ~7 tickers, sequential).
+
+```bash
+gcloud scheduler jobs create http portfolio-plateau-checks \
+  --location us-central1 \
+  --schedule "*/15 9-16 * * 1-5" \
+  --time-zone "America/New_York" \
+  --uri "${SERVICE_URL}/api/internal/portfolio/run-plateau-checks" \
+  --http-method POST \
+  --headers "X-Scheduler-Secret=${SCHEDULER_SECRET}" \
+  --attempt-deadline 120s
+```
+
 ---
 
 ## 4b. Cloud Scheduler — Earnings Module

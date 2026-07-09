@@ -90,6 +90,8 @@ async def get_portfolio(
         )
     else:
         pv = await engine.portfolio_value(account_id)
+    equity_tickers = [h.ticker for h in pv.positions if h.instrument_type == "equity"]
+    grade_map = await engine.latest_grades(equity_tickers)
     return PortfolioValueResponse(
         account_id=pv.account_id,
         last_snapshot_at=pv.last_snapshot_at,
@@ -110,6 +112,11 @@ async def get_portfolio(
                 multiplier=h.multiplier,
                 underlying_ticker=h.underlying_ticker,
                 account_name=h.account_name,
+                **({
+                    "sell_grade": grade_map[h.ticker.upper()].sell_grade,
+                    "sell_pressure_score": grade_map[h.ticker.upper()].sell_pressure_score,
+                    "stop_suggestion": grade_map[h.ticker.upper()].stop_suggestion,
+                } if h.ticker.upper() in grade_map else {}),
             )
             for h in pv.positions
         ],

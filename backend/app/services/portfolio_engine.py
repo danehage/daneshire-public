@@ -17,10 +17,10 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.portfolio import Account, Holding, PortfolioSnapshot, Trade
+from app.models.portfolio import Account, Holding, HoldingGradeHistory, PortfolioSnapshot, Trade
 from app.models.watchlist import WatchlistItem
 from app.schemas.portfolio import PositionDiff, SnapshotDiffResponse, TradeCommit
 from app.schemas.portfolio_parsing import ParsedPortfolioSnapshot
@@ -569,3 +569,56 @@ class PortfolioEngine:
             totals_match=totals_match,
             account_id=account_id,
         )
+
+    async def latest_grades(self, tickers: list[str]) -> dict[str, HoldingGradeHistory]:
+        """Return the most-recent HoldingGradeHistory row for each ticker in ``tickers``.
+
+        Uses a subquery that picks the max checked_at per ticker then joins back
+        to get the full row. Returns a dict keyed by upper-cased ticker.
+        """
+        if not tickers:
+            return {}
+
+        upper_tickers = [t.upper() for t in tickers]
+
+        # Subquery: max checked_at per ticker among the requested tickers
+        subq = (
+            select(
+                HoldingGradeHistory.ticker,
+                func.max(HoldingGradeHistory.checked_at).label("max_checked"),
+            )
+            .where(HoldingGradeHistory.ticker.in_(upper_tickers))
+            .group_by(HoldingGradeHistory.ticker)
+            .subquery()
+        )
+
+        result = await self.db.execute(
+            select(HoldingGradeHistory).join(
+                subq,
+                (HoldingGradeHistory.ticker == subq.c.ticker)
+                & (HoldingGradeHistory.checked_at == subq.c.max_checked),
+            )
+        )
+        rows = list(result.scalars().all())
+        return {row.ticker.upper(): row for row in rows}
+
+    async def last_notified_at(self, tickers: list[str]) -> dict[str, datetime]:
+        """Return the most-recent ``checked_at`` with ``notified=True`` per ticker.
+
+        Drives the plateau-check daily refresher: a deteriorated holding pings
+        once per day, keyed off its last successful notification.
+        """
+        if not tickers:
+            return {}
+
+        upper_tickers = [t.upper() for t in tickers]
+        result = await self.db.execute(
+            select(
+                HoldingGradeHistory.ticker,
+                func.max(HoldingGradeHistory.checked_at),
+            )
+            .where(HoldingGradeHistory.ticker.in_(upper_tickers))
+            .where(HoldingGradeHistory.notified.is_(True))
+            .group_by(HoldingGradeHistory.ticker)
+        )
+        return {t.upper(): ts for t, ts in result.all()}

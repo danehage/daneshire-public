@@ -4,6 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Text,
     text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -155,4 +157,31 @@ class Holding(Base):
         ),
         Index("idx_holdings_snapshot", "snapshot_id"),
         Index("idx_holdings_ticker", "ticker"),
+    )
+
+
+class HoldingGradeHistory(Base):
+    __tablename__ = "holding_grade_history"
+
+    id: Mapped[UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sell_grade: Mapped[str] = mapped_column(String(20), nullable=False)
+    sell_pressure_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    signals: Mapped[list] = mapped_column(
+        ARRAY(Text), nullable=False, server_default=text("'{}'")
+    )
+    stop_suggestion: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (
+        Index("idx_hgh_ticker_checked", "ticker", "checked_at"),
     )

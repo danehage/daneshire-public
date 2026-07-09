@@ -441,3 +441,305 @@ class TechnicalIndicators:
             "momentum_10d": round(momentum_10d, 1),
             "rsi": round(rsi, 1),
         }
+
+    @staticmethod
+    def calculate_plateau_metrics(
+        current_price: float,
+        df: pd.DataFrame,
+        open_date: Optional[str] = None,
+        pre_entry_high_52w: Optional[float] = None,
+        entry_price: Optional[float] = None,
+    ) -> Optional[dict]:
+        """
+        Time-series metrics that separate a stock that has STOPPED rising from one
+        still rising (issue #57). Mirror of calculate_recovery_metrics() with swing
+        HIGHS instead of lows, RSI CEILINGS instead of floors.
+
+        Requires open_date (ISO string) to anchor the swing-high search from the
+        position open date forward — prevents a pre-entry crash peak from reading
+        as "the run ceiling" and poisoning the grade.
+        """
+        if df is None or len(df) < 60:
+            return None
+
+        highs = df["high"].reset_index(drop=True)
+        lows = df["low"].reset_index(drop=True)
+        closes = df["close"].reset_index(drop=True)
+        rsi = TechnicalIndicators._rsi_series(closes)
+
+        # Run anchoring: search from max(open_date bar index, trailing 126 bars).
+        # Without this, a stock bought after a crash reads its pre-crash peak as
+        # "the ceiling" and the entire recovery grades as already-cresting.
+        anchor = max(0, len(highs) - 126)
+        if open_date is not None and "date" in df.columns:
+            dates = pd.to_datetime(df["date"]).reset_index(drop=True)
+            open_ts = pd.Timestamp(open_date)
+            matches = dates[dates >= open_ts]
+            if not matches.empty:
+                anchor = max(int(matches.index[0]), anchor)
+
+        # Swing highs: local maxima of the daily high over a +/-7-bar window,
+        # spaced >10 bars apart, searched from the run anchor onward.
+        window, spacing = 7, 10
+        swing_idx: list[int] = []
+        for i in range(anchor, len(highs)):
+            lo, hi = max(0, i - window), min(len(highs), i + window + 1)
+            if highs.iloc[i] == highs.iloc[lo:hi].max() and (
+                not swing_idx or i - swing_idx[-1] > spacing
+            ):
+                swing_idx.append(i)
+
+        # Ascending ceiling sequence: swing highs that set a new running high.
+        ceiling_idx: list[int] = []
+        for i in swing_idx:
+            if not ceiling_idx or highs.iloc[i] > highs.iloc[ceiling_idx[-1]]:
+                ceiling_idx.append(i)
+
+        rsi_at_newest_ceiling = (
+            float(rsi.iloc[ceiling_idx[-1]]) if ceiling_idx else None
+        )
+
+        # RSI ceiling direction: RSI at the newest SWING HIGH vs the last
+        # ceiling before it. Falling = buyers exhausting (sell signal). Lower
+        # swing highs never become ceilings, so a ceilings-only delta would
+        # read an EOG-style fade (RSI 85.5 -> 59 -> 58) as strengthening —
+        # the newest swing high is what exposes the exhaustion.
+        rsi_ceiling_delta = None
+        if swing_idx:
+            newest_swing = swing_idx[-1]
+            prior_ceilings = [i for i in ceiling_idx if i < newest_swing]
+            if prior_ceilings:
+                rsi_ceiling_delta = float(
+                    rsi.iloc[newest_swing] - rsi.iloc[prior_ceilings[-1]]
+                )
+
+        # Overshoot %: how much each ceiling cleared the prior, relative to prior.
+        # Deceleration = run extension narrowing, momentum gas running out.
+        overshoots = [
+            (highs.iloc[b] - highs.iloc[a]) / highs.iloc[a] * 100
+            for a, b in zip(ceiling_idx, ceiling_idx[1:])
+        ]
+        overshoot_decelerating = None
+        if len(overshoots) >= 2:
+            overshoot_decelerating = bool(overshoots[-1] < overshoots[-2])
+
+        # Post-high trajectory: maxima of successive 10-bar blocks of CLOSES since
+        # the newest run ceiling. Fading = price losing altitude (EOG signature).
+        post_high_trend = None
+        if ceiling_idx:
+            newest_ceiling_bar = ceiling_idx[-1]
+            post_high_closes = closes.iloc[newest_ceiling_bar + 1:]
+            blocks = [
+                float(post_high_closes.iloc[i : i + 10].max())
+                for i in range(0, len(post_high_closes), 10)
+                if len(post_high_closes.iloc[i : i + 10]) >= 5
+            ]
+            if len(blocks) >= 2:
+                post_high_trend = "rising" if blocks[-1] > blocks[-2] else "fading"
+
+        # Extension vs 50-MA: parabolic stretch above medium-term trend.
+        ma50 = closes.rolling(50).mean()
+        ext_vs_50ma = None
+        ma50_val = float(ma50.iloc[-1]) if not pd.isna(ma50.iloc[-1]) else None
+        if ma50_val and ma50_val > 0:
+            ext_vs_50ma = (current_price - ma50_val) / ma50_val * 100
+
+        # ATR(14) for stop sizing.
+        tr = pd.concat(
+            [
+                highs - lows,
+                (highs - closes.shift(1)).abs(),
+                (lows - closes.shift(1)).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr14_series = tr.ewm(alpha=1.0 / 14, min_periods=14, adjust=False).mean()
+        atr14 = (
+            float(atr14_series.iloc[-1])
+            if not pd.isna(atr14_series.iloc[-1])
+            else None
+        )
+
+        # Minor swing floor (±5 bars, >7 spacing, last 60 bars) for structure stop.
+        # Tighter than the main ±7 detector to catch the most recent support shelf.
+        # Only CONFIRMED floors count — a bar needs window_f bars after it, else a
+        # declining stock's newest low reads as its own "floor" and price can
+        # never break it (Broken would never fire).
+        window_f, spacing_f = 5, 7
+        start_f = max(0, len(lows) - 60)
+        minor_floors: list[int] = []
+        for i in range(start_f, len(lows) - window_f):
+            lo_f = max(0, i - window_f)
+            hi_f = min(len(lows), i + window_f + 1)
+            if lows.iloc[i] == lows.iloc[lo_f:hi_f].min() and (
+                not minor_floors or i - minor_floors[-1] > spacing_f
+            ):
+                minor_floors.append(i)
+        minor_swing_floor = (
+            float(lows.iloc[minor_floors[-1]]) if minor_floors else None
+        )
+
+        # Gap-closed: where the current price sits vs the pre-entry 52-week high.
+        # >= 88% triggers Thesis complete.
+        gap_closed_pct = None
+        if pre_entry_high_52w and pre_entry_high_52w > 0:
+            gap_closed_pct = current_price / pre_entry_high_52w * 100
+
+        # Down/up volume ratio (recent 20 bars) as distribution confirmation.
+        recent_20 = df.tail(20).reset_index(drop=True)
+        up_mask = recent_20["close"] > recent_20["open"]
+        down_mask = recent_20["close"] < recent_20["open"]
+        up_vol = (
+            float(recent_20.loc[up_mask, "volume"].mean()) if up_mask.any() else 0.0
+        )
+        down_vol = (
+            float(recent_20.loc[down_mask, "volume"].mean()) if down_mask.any() else 0.0
+        )
+        down_up_vol_ratio = down_vol / up_vol if up_vol > 0 else 1.0
+
+        days_since_high = (
+            int(len(closes) - 1 - ceiling_idx[-1]) if ceiling_idx else None
+        )
+
+        return {
+            "rsi_ceiling_delta": (
+                round(rsi_ceiling_delta, 1) if rsi_ceiling_delta is not None else None
+            ),
+            "rsi_at_newest_ceiling": (
+                round(rsi_at_newest_ceiling, 1)
+                if rsi_at_newest_ceiling is not None
+                else None
+            ),
+            "overshoot_decelerating": overshoot_decelerating,
+            "post_high_trend": post_high_trend,
+            "ext_vs_50ma": round(ext_vs_50ma, 1) if ext_vs_50ma is not None else None,
+            "atr14": round(atr14, 2) if atr14 is not None else None,
+            "minor_swing_floor": (
+                round(minor_swing_floor, 2) if minor_swing_floor is not None else None
+            ),
+            "gap_closed_pct": (
+                round(gap_closed_pct, 1) if gap_closed_pct is not None else None
+            ),
+            "down_up_vol_ratio": round(down_up_vol_ratio, 2),
+            "days_since_high": days_since_high,
+            "ceiling_count": len(ceiling_idx),
+            "swing_high_count": len(swing_idx),
+            "entry_price": entry_price,
+        }
+
+    @staticmethod
+    def grade_holding(result: dict) -> tuple[str, int, list[str], Optional[str]]:
+        """
+        Grade a holding's sell-side posture from plateau metrics + current price.
+
+        Returns (label, sell_pressure_score, signals, stop_suggestion).
+        Label precedence: Broken / Climax / Thesis complete / Distribution /
+        Cresting / Running. Score measures sell pressure; higher = more reason
+        to exit. Running positions score near 0; climax/thesis positions > 30.
+        Broken triggers below the newest confirmed swing floor or below the
+        entry base (``entry_price`` in the metrics dict) — underwater positions
+        read Broken, not Running.
+        """
+        signals: list[str] = []
+        score = 0
+
+        rsi_ceiling_delta = result.get("rsi_ceiling_delta")
+        rsi_at_newest_ceiling = result.get("rsi_at_newest_ceiling")
+        overshoot_decelerating = result.get("overshoot_decelerating")
+        post_high_trend = result.get("post_high_trend")
+        ext_vs_50ma = result.get("ext_vs_50ma")
+        gap_closed_pct = result.get("gap_closed_pct")
+        down_up_vol_ratio = result.get("down_up_vol_ratio", 1.0)
+        minor_swing_floor = result.get("minor_swing_floor")
+        atr14 = result.get("atr14")
+        entry_price = result.get("entry_price")
+        current_price = float(result.get("price", 0.0))
+
+        # --- Structure track (sell pressure from metric deterioration) ---
+        if rsi_ceiling_delta is not None and rsi_ceiling_delta < 0:
+            score += 20
+            signals.append("RSI ceiling divergence (sellers absorbing at new highs)")
+
+        if overshoot_decelerating:
+            score += 10
+            signals.append("Overshoot decelerating (extension narrowing)")
+
+        if post_high_trend == "fading":
+            score += 10
+            signals.append("Post-high blocks fading (price losing altitude)")
+
+        # --- Climax track (both required; no partial credit for AJG-style flat) ---
+        climax_rsi = (
+            rsi_at_newest_ceiling is not None and rsi_at_newest_ceiling >= 75.0
+        )
+        climax_ext = ext_vs_50ma is not None and ext_vs_50ma >= 15.0
+        if climax_rsi and climax_ext:
+            score += 30
+            # Insert first so the distinct "sell into strength" copy leads the
+            # Pushover message even when structure signals also fired.
+            signals.insert(
+                0,
+                f"Parabolic — RSI {rsi_at_newest_ceiling:.0f} at run high, "
+                f"+{ext_vs_50ma:.0f}% over 50-MA (sell into strength)",
+            )
+
+        # --- Thesis gauge (gap-closed scaling into the 88% label threshold) ---
+        if gap_closed_pct is not None:
+            if gap_closed_pct >= 88.0:
+                score += 20
+                signals.append(
+                    f"Thesis target reached — {gap_closed_pct:.0f}% of pre-entry 52w high"
+                )
+            elif gap_closed_pct >= 75.0:
+                pts = int((gap_closed_pct - 75.0) / (88.0 - 75.0) * 20)
+                score += pts
+
+        # --- Volume confirmation (small) ---
+        if down_up_vol_ratio > 1.05:
+            score += 3
+            signals.append(
+                f"Distribution vol ({down_up_vol_ratio:.2f}× more volume on down days)"
+            )
+
+        # --- Label (precedence order) ---
+        # Broken = below structure: under the newest confirmed swing floor OR
+        # underwater vs the entry base (positions that never ran get full
+        # information, not "—").
+        broken_floor = minor_swing_floor is not None and current_price < minor_swing_floor
+        broken_entry = entry_price is not None and entry_price > 0 and current_price < entry_price
+        label: str
+        if broken_floor or broken_entry:
+            label = "Broken"
+            if broken_floor:
+                signals.insert(0, f"Below newest swing floor (${minor_swing_floor:.2f})")
+            else:
+                signals.insert(0, f"Underwater vs entry base (${entry_price:.2f})")
+        elif climax_rsi and climax_ext:
+            label = "Climax"
+        elif gap_closed_pct is not None and gap_closed_pct >= 88.0:
+            label = "Thesis complete"
+        elif post_high_trend == "fading" and down_up_vol_ratio > 1.05:
+            label = "Distribution"
+        elif (rsi_ceiling_delta is not None and rsi_ceiling_delta < 0) or (
+            overshoot_decelerating
+        ):
+            label = "Cresting"
+        else:
+            label = "Running"
+
+        # --- Stop suggestion: minor floor stop + 1.5× ATR trail ---
+        stop_suggestion: Optional[str] = None
+        parts: list[str] = []
+        if minor_swing_floor is not None and current_price > 0:
+            floor_pct = (current_price - minor_swing_floor) / current_price * 100
+            if floor_pct <= 12.0:
+                parts.append(
+                    f"Structure stop <${minor_swing_floor:.2f} ({floor_pct:.0f}% away)"
+                )
+        if atr14 is not None and current_price > 0:
+            trail_price = current_price - 1.5 * atr14
+            parts.append(f"Trail ${trail_price:.2f} (1.5× ATR)")
+        if parts:
+            stop_suggestion = " or ".join(parts)
+
+        return label, score, signals, stop_suggestion

@@ -58,6 +58,8 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 **Owned Position** — *pending (#10)*: a watchlist item whose status is `owned`, auto-promoted when a snapshot commit includes its ticker.
 
+**Sell-side Grade (#57)** — per-holding plateau grade answering "has the rising stopped." Six labels in precedence order: Broken (below the newest confirmed swing floor or underwater vs entry base) > Climax (RSI ≥ 75 at the newest run high AND ≥ 15% extension over the 50-MA) > Thesis complete (price ≥ 88% of the pre-entry 52-week high) > Distribution > Cresting > Running. Metrics in `calculate_plateau_metrics()` (`indicators.py`), run-anchored to max(open date, trailing 126 bars); the RSI delta compares the newest *swing high* against the prior ceiling (lower swing highs never become ceilings — that's the fade signal). Graded every 15 min by `POST /api/internal/portfolio/run-plateau-checks`, logged to `holding_grade_history` (append-only), surfaced on the Portfolio page. Labels (not score) drive Pushover: any worsening + one daily refresher while deteriorated; silent on recovery. Stops: structure stop under the newest minor swing floor (only when ≤ 12% away) + 1.5× ATR(14) trail — never flat $/%. HV and days-since-high are display-only, never scored. Acceptance fixtures: real frozen bars for historical reference exits in `tests/fixtures/plateau/`.
+
 ## Scanner
 
 **HV Rank** — historical-volatility-rank proxy. Not implied volatility. UI labels must say "HV Rank", never "IV Rank".

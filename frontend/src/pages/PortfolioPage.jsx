@@ -34,6 +34,30 @@ function HoldingsBadge({ type }) {
   return null;
 }
 
+const GRADE_STYLES = {
+  Running: "border-green-400 text-green-700 bg-green-50 dark:bg-green-950 dark:text-green-300 dark:border-green-700",
+  Cresting: "border-amber-400 text-amber-700 bg-amber-50 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-700",
+  Distribution: "border-orange-400 text-orange-700 bg-orange-50 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-700",
+  "Thesis complete": "border-orange-500 text-orange-800 bg-orange-50 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-600",
+  Climax: "border-red-400 text-red-700 bg-red-50 dark:bg-red-950 dark:text-red-300 dark:border-red-600",
+  Broken: "border-red-700 text-red-900 bg-red-100 dark:bg-red-950 dark:text-red-200 dark:border-red-500",
+};
+
+function GradeBadge({ grade, stop }) {
+  if (!grade) return <span className="text-mid-brown">—</span>;
+  const cls = GRADE_STYLES[grade] ?? "border-ink/40 text-mid-brown";
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className={`inline-block px-1.5 py-0.5 text-xs font-mono border ${cls}`}>
+        {grade}
+      </span>
+      {stop && (
+        <span className="text-xs text-mid-brown font-mono leading-tight">{stop}</span>
+      )}
+    </div>
+  );
+}
+
 function HoldingsTable({ positions, showAccount = false }) {
   if (positions.length === 0) {
     return (
@@ -56,6 +80,7 @@ function HoldingsTable({ positions, showAccount = false }) {
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Mkt Value</th>
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Day Chg</th>
           <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Type</th>
+          <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Grade</th>
         </tr>
       </thead>
       <tbody>
@@ -109,6 +134,11 @@ function HoldingsTable({ positions, showAccount = false }) {
               </td>
               <td className="py-2 px-3">
                 <HoldingsBadge type={pos.instrument_type} />
+              </td>
+              <td className="py-2 px-3">
+                {pos.instrument_type === "equity" && (
+                  <GradeBadge grade={pos.sell_grade} stop={pos.stop_suggestion} />
+                )}
               </td>
             </tr>
           );

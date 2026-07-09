@@ -137,6 +137,10 @@ class ComputedHoldingResponse(BaseModel):
     underlying_ticker: Optional[str] = None
     # Populated only in the aggregated "All accounts" view; null otherwise.
     account_name: Optional[str] = None
+    # Sell-side grade fields — populated from holding_grade_history by the route.
+    sell_grade: Optional[str] = None
+    sell_pressure_score: Optional[int] = None
+    stop_suggestion: Optional[str] = None
 
 
 class PortfolioValueResponse(BaseModel):
