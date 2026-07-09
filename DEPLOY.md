@@ -232,16 +232,20 @@ gcloud scheduler jobs create http alert-expire-stale \
   --attempt-deadline 60s
 ```
 
-### Plateau Checks — sell-side holding grades (every 15 min, market hours)
+### Plateau Checks — sell-side holding grades (hourly, market hours)
 
 Grades every held equity (#57) and pings on grade worsening + one daily
-refresher while deteriorated. The 120s deadline (vs 60s elsewhere) covers the
-per-holding history fetches (~700 days × ~7 tickers, sequential).
+refresher while deteriorated. Hourly on the hour, 10:00–16:00 ET — swing-trade
+cadence (Dane's call, 2026-07-09): grade transitions don't need intraday
+urgency, and hourly cuts FMP history load ~4× vs the 15-min alert cadence.
+Skips the noisy first half hour after open; the 16:00 run grades the close.
+The 120s deadline (vs 60s elsewhere) covers the per-holding history fetches
+(~700 days × ~7 tickers, sequential).
 
 ```bash
 gcloud scheduler jobs create http portfolio-plateau-checks \
   --location us-central1 \
-  --schedule "*/15 9-16 * * 1-5" \
+  --schedule "0 10-16 * * 1-5" \
   --time-zone "America/New_York" \
   --uri "${SERVICE_URL}/api/internal/portfolio/run-plateau-checks" \
   --http-method POST \

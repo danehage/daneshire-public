@@ -299,7 +299,7 @@ POST /api/internal/alerts/expire-stale
      → marks alerts past expires_at as 'expired'
 
 POST /api/internal/portfolio/run-plateau-checks
-     → every 15 min during market hours (9:30-16:00 ET weekdays)
+     → hourly on the hour, 10:00-16:00 ET weekdays (swing cadence)
      → grades every held equity's sell-side posture (#57): Broken / Climax /
        Thesis complete / Distribution / Cresting / Running
      → logs each evaluation to holding_grade_history (append-only)
