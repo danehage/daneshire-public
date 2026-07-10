@@ -176,6 +176,38 @@ def test_stop_suggestion_field_exists(graded):
         assert "stop" in graded[ticker]
 
 
+def test_hv_now_present_and_positive(graded):
+    """hv_now must be in the metrics dict and be a positive float for all fixtures."""
+    for ticker in graded:
+        hv = graded[ticker].get("hv_now")
+        assert hv is not None, f"{ticker}: hv_now is missing from metrics"
+        assert hv > 0, f"{ticker}: hv_now={hv} expected > 0"
+
+
+def test_hv_now_not_scoring(graded):
+    """HV must not affect the sell-pressure score — adding a high-HV value to a
+    Running result must leave the score unchanged (confirmed #57/#59 design decision).
+    """
+    result_without_hv = {
+        "price": 110.0,
+        "rsi_ceiling_delta": None,
+        "rsi_at_newest_ceiling": None,
+        "overshoot_decelerating": None,
+        "post_high_trend": None,
+        "ext_vs_50ma": 5.0,
+        "gap_closed_pct": None,
+        "down_up_vol_ratio": 1.0,
+        "minor_swing_floor": 100.0,
+        "atr14": 2.0,
+    }
+    result_with_high_hv = {**result_without_hv, "hv_now": 80.0}
+    _, score_without, _, _ = TechnicalIndicators.grade_holding(result_without_hv)
+    _, score_with, _, _ = TechnicalIndicators.grade_holding(result_with_high_hv)
+    assert score_without == score_with, (
+        f"hv_now must not affect the score: without={score_without}, with={score_with}"
+    )
+
+
 def test_plateau_metrics_require_60_bars():
     df = pd.DataFrame(
         {

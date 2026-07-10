@@ -601,6 +601,17 @@ class TechnicalIndicators:
             int(len(closes) - 1 - ceiling_idx[-1]) if ceiling_idx else None
         )
 
+        # HV (20d, annualized %) — display-only; never feeds the sell-pressure score
+        # (confirmed #57 design decision: HV moved in opposite directions for the
+        # two real Climax cases — NFLX 57→28, ESTC 53→64). Matches calculate_recovery_metrics.
+        returns_hv = closes.pct_change()
+        hv_series = returns_hv.rolling(20).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
+        hv_now = (
+            round(float(hv_series.iloc[-1]), 1)
+            if not pd.isna(hv_series.iloc[-1])
+            else None
+        )
+
         return {
             "rsi_ceiling_delta": (
                 round(rsi_ceiling_delta, 1) if rsi_ceiling_delta is not None else None
@@ -625,6 +636,7 @@ class TechnicalIndicators:
             "ceiling_count": len(ceiling_idx),
             "swing_high_count": len(swing_idx),
             "entry_price": entry_price,
+            "hv_now": hv_now,
         }
 
     @staticmethod

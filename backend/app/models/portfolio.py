@@ -175,6 +175,9 @@ class HoldingGradeHistory(Base):
         ARRAY(Text), nullable=False, server_default=text("'{}'")
     )
     stop_suggestion: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Display-only volatility metrics; never feed the sell-pressure score (#59, #57).
+    hv_now: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1), nullable=True)
+    atr_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2), nullable=True)
     notified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )

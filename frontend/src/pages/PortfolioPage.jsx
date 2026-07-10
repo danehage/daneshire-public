@@ -44,9 +44,12 @@ const GRADE_STYLES = {
   Broken: "border-red-700 text-red-900 bg-red-100 dark:bg-red-950 dark:text-red-200 dark:border-red-500",
 };
 
-function GradeBadge({ grade, stop }) {
+function GradeBadge({ grade, stop, hvNow, atrPct }) {
   if (!grade) return <span className="text-mid-brown">—</span>;
   const cls = GRADE_STYLES[grade] ?? "border-ink/40 text-mid-brown";
+  const hvStr = hvNow != null ? `HV ${Math.round(Number(hvNow))}` : null;
+  const atrStr = atrPct != null ? `ATR ${Number(atrPct).toFixed(1)}%` : null;
+  const volLine = [hvStr, atrStr].filter(Boolean).join(" · ");
   return (
     <div className="flex flex-col gap-0.5">
       <span className={`inline-block px-1.5 py-0.5 text-xs font-mono border ${cls}`}>
@@ -54,6 +57,9 @@ function GradeBadge({ grade, stop }) {
       </span>
       {stop && (
         <span className="text-xs text-mid-brown font-mono leading-tight">{stop}</span>
+      )}
+      {volLine && (
+        <span className="text-xs text-mid-brown/70 font-mono leading-tight">{volLine}</span>
       )}
     </div>
   );
@@ -147,7 +153,12 @@ function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} 
               </td>
               <td className="py-2 px-3">
                 {pos.instrument_type === "equity" && (
-                  <GradeBadge grade={pos.sell_grade} stop={pos.stop_suggestion} />
+                  <GradeBadge
+                    grade={pos.sell_grade}
+                    stop={pos.stop_suggestion}
+                    hvNow={pos.hv_now}
+                    atrPct={pos.atr_pct}
+                  />
                 )}
               </td>
             </tr>

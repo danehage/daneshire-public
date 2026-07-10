@@ -534,6 +534,15 @@ async def run_plateau_checks(
         metrics["price"] = current_price
         label, score, signals, stop_suggestion = TechnicalIndicators.grade_holding(metrics)
 
+        # ATR as % of price — display-only alongside HV, never scoring.
+        atr14 = metrics.get("atr14")
+        atr_pct_val = (
+            round(atr14 / current_price * 100, 2)
+            if atr14 is not None and current_price > 0
+            else None
+        )
+        hv_now_val = metrics.get("hv_now")
+
         row = HoldingGradeHistory(
             ticker=ticker,
             checked_at=now,
@@ -541,6 +550,8 @@ async def run_plateau_checks(
             sell_pressure_score=score,
             signals=signals,
             stop_suggestion=stop_suggestion,
+            hv_now=hv_now_val,
+            atr_pct=atr_pct_val,
             notified=False,
         )
         db.add(row)

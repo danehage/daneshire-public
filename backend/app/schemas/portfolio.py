@@ -141,6 +141,9 @@ class ComputedHoldingResponse(BaseModel):
     sell_grade: Optional[str] = None
     sell_pressure_score: Optional[int] = None
     stop_suggestion: Optional[str] = None
+    # Display-only volatility context (never scoring). hv_now = 20d HV annualised %.
+    hv_now: Optional[Decimal] = None
+    atr_pct: Optional[Decimal] = None
 
 
 class PortfolioValueResponse(BaseModel):

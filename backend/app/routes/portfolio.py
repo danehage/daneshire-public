@@ -116,6 +116,8 @@ async def get_portfolio(
                     "sell_grade": grade_map[h.ticker.upper()].sell_grade,
                     "sell_pressure_score": grade_map[h.ticker.upper()].sell_pressure_score,
                     "stop_suggestion": grade_map[h.ticker.upper()].stop_suggestion,
+                    "hv_now": grade_map[h.ticker.upper()].hv_now,
+                    "atr_pct": grade_map[h.ticker.upper()].atr_pct,
                 } if h.ticker.upper() in grade_map else {}),
             )
             for h in pv.positions
