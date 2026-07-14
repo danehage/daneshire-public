@@ -78,7 +78,7 @@ function SetupBadge({ setup, daysSinceLow }) {
       ? "bg-warning text-warm-white"
       : setup === "Uptrend pullback"
       ? "bg-accent text-warm-white"
-      : "bg-success text-warm-white"; // Exhaustion turn / Basing glide
+      : "bg-success text-warm-white"; // Just bottomed / Basing
 
   return (
     <span

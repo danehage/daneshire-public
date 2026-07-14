@@ -203,7 +203,7 @@ class StockScanner:
 
             # Core: undercut trajectory. Acceleration is only bearish when the
             # RSI floor is ALSO falling — a big final undercut on rising RSI
-            # is the capitulation-flush shape of an exhaustion turn (ESTC).
+            # is the capitulation-flush shape of a just-bottomed turn (ESTC).
             undercut_decel = result.get("undercut_decelerating")
             if undercut_decel is True:
                 score += 15
@@ -249,9 +249,9 @@ class StockScanner:
             elif score < 0:
                 setup = "Knife"
             elif days_since_low <= 15:
-                setup = "Exhaustion turn"
+                setup = "Just bottomed"
             else:
-                setup = "Basing glide"
+                setup = "Basing"
         else:
             # ---- Uptrend-pullback track ----
             dist_50 = result.get("dist_50")

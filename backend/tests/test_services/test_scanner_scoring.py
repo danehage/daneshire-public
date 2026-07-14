@@ -113,7 +113,7 @@ def test_amc_gets_knife_label(scored):
 
 def test_winners_get_constructive_labels(scored):
     for ticker, _, _ in WINNERS:
-        assert scored[ticker]["setup"] in ("Exhaustion turn", "Basing glide"), ticker
+        assert scored[ticker]["setup"] in ("Just bottomed", "Basing"), ticker
 
 
 def test_estc_capitulation_flush_not_penalized(scored):
