@@ -336,6 +336,21 @@ async def refresh_iv_snapshots(
     )
 
 
+def _clamp_rank(rank: Decimal) -> Decimal:
+    """Bound an IV rank to [0, 100] (`iv_rank_bounded` check constraint).
+
+    Tastytrade's rank is (current − 52w low) / (52w high − 52w low) and
+    legitimately escapes [0, 1] when current IV breaches its own yearly
+    range — common for volatile names at earnings-season peak (first seen
+    in prod on the gated universe, 2026-07-16, as a CheckViolationError).
+    """
+    if rank < 0:
+        return Decimal(0)
+    if rank > 100:
+        return Decimal(100)
+    return rank
+
+
 async def _resolve_iv_rank(
     db: AsyncSession, ticker: str, raw: IVSnapshotRaw
 ) -> tuple[Decimal, str]:
@@ -343,7 +358,7 @@ async def _resolve_iv_rank(
 
     < 252 prior rows → provider value, ``source='tastytrade'``.
     ≥ 252 prior rows → self-computed from min/max(iv30) over the most
-    recent 252 rows, clamped to [0, 100], ``source='self_252d'``.
+    recent 252 rows, ``source='self_252d'``. Both clamped to [0, 100].
     """
     count_stmt = select(func.count()).select_from(IVSnapshot).where(
         IVSnapshot.ticker == ticker
@@ -351,7 +366,7 @@ async def _resolve_iv_rank(
     row_count = int((await db.execute(count_stmt)).scalar() or 0)
 
     if row_count < _IV_RANK_CUTOVER_ROWS:
-        return raw.iv_rank_provider, "tastytrade"
+        return _clamp_rank(raw.iv_rank_provider), "tastytrade"
 
     recent = (
         select(IVSnapshot.iv30)
@@ -370,14 +385,10 @@ async def _resolve_iv_rank(
     if min_iv is None or max_iv is None or max_iv == min_iv:
         # Degenerate range — fall back to provider value rather than
         # writing a meaningless 0 or 100.
-        return raw.iv_rank_provider, "tastytrade"
+        return _clamp_rank(raw.iv_rank_provider), "tastytrade"
 
     rank = (raw.iv30 - min_iv) / (max_iv - min_iv) * Decimal(100)
-    if rank < 0:
-        rank = Decimal(0)
-    elif rank > 100:
-        rank = Decimal(100)
-    return rank, "self_252d"
+    return _clamp_rank(rank), "self_252d"
 
 
 @router.post("/earnings/backfill-realized-moves", response_model=BackfillRealizedMovesSummary)

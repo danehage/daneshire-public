@@ -531,6 +531,37 @@ async def test_events_outside_horizon_not_evaluated(
 
 
 @pytest.mark.asyncio
+async def test_provider_iv_rank_clamped_to_bounds(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Tastytrade's rank escapes [0, 1] when current IV breaches its own
+    52-week range; the provider path must clamp like the self path or the
+    insert violates `iv_rank_bounded` (prod CheckViolationError)."""
+    await _add_watchlist(db_session, "HOT")
+    await _add_watchlist(db_session, "COLD")
+    _override_market(
+        {
+            "HOT": _snapshot("HOT", rank="132.5"),
+            "COLD": _snapshot("COLD", rank="-4"),
+        }
+    )
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    assert response.status_code == 200
+    assert response.json()["written"] == 2
+
+    rows = (
+        await db_session.execute(select(IVSnapshot).order_by(IVSnapshot.ticker))
+    ).scalars().all()
+    by_ticker = {r.ticker: r for r in rows}
+    assert Decimal(by_ticker["HOT"].iv_rank) == Decimal("100")
+    assert Decimal(by_ticker["COLD"].iv_rank) == Decimal("0")
+    assert all(r.source == "tastytrade" for r in rows)
+
+
+@pytest.mark.asyncio
 async def test_snapshots_fetched_and_committed_in_batches(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ):
