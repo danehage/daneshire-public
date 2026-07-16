@@ -50,6 +50,10 @@ from app.services.portfolio_engine import PortfolioEngine
 # happens when this many prior rows exist for a ticker.
 _IV_RANK_CUTOVER_ROWS = 252
 
+# Stage-1 liquidity gate (#65) evaluates tickers with earnings events
+# inside this many calendar days (~10 trading days, the screener window).
+_GATE_HORIZON_DAYS = 14
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/internal", tags=["internal"])
@@ -187,8 +191,15 @@ async def refresh_iv_snapshots(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_scheduler_secret),
 ):
-    """Write today's `iv_snapshots` row for every watchlist ticker tagged
-    `earnings-candidate`.
+    """Write today's `iv_snapshots` row for every ticker that either has an
+    upcoming earnings event AND clears the Stage-1 liquidity gate, or carries
+    the `earnings-candidate` watchlist tag (manual override, gate bypassed).
+
+    The gate (#65, PRD §15): FMP batch quotes on tickers with events in the
+    next 14 calendar days; keep price ≥ EARNINGS_GATE_MIN_PRICE, average
+    volume ≥ EARNINGS_GATE_MIN_AVG_VOLUME (today's volume when the provider
+    omits the average), market cap ≥ EARNINGS_GATE_MIN_MARKET_CAP. Quote
+    errors count as failed.
 
     Skips tickers with no data (no chain / no quote / no token) and
     tickers whose front-week straddle could not be priced (ADR-0003).
@@ -197,16 +208,53 @@ async def refresh_iv_snapshots(
     """
     today = date.today()
 
-    # Pick up every watchlist item carrying the earnings-candidate tag.
+    # Manual override: earnings-candidate tags are always snapshotted.
     stmt = select(WatchlistItem.ticker).where(WatchlistItem.tags.any("earnings-candidate"))
     rows = (await db.execute(stmt)).scalars().all()
-    tickers = sorted({(t or "").strip().upper() for t in rows if t})
+    tagged = {(t or "").strip().upper() for t in rows if t}
+
+    # Stage-1 candidates: distinct tickers with an event inside the horizon.
+    horizon = today + timedelta(days=_GATE_HORIZON_DAYS)
+    stmt = (
+        select(EarningsEvent.ticker)
+        .where(EarningsEvent.report_date >= today)
+        .where(EarningsEvent.report_date <= horizon)
+        .distinct()
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    candidates = sorted(
+        {(t or "").strip().upper() for t in rows if t} - tagged
+    )
+
+    passed_gate: set[str] = set()
+    if candidates:
+        quote_map = await market.quotes(candidates)
+        for ticker in candidates:
+            q = quote_map.get(ticker)
+            if isinstance(q, MarketDataError) or q is None:
+                continue
+            if (
+                q.price >= settings.earnings_gate_min_price
+                and (q.avg_volume or q.volume) >= settings.earnings_gate_min_avg_volume
+                and q.market_cap >= settings.earnings_gate_min_market_cap
+            ):
+                passed_gate.add(ticker)
+
+    evaluated = len(candidates)
+    gate_counts = {
+        "evaluated": evaluated,
+        "passed_gate": len(passed_gate),
+        "failed_gate": evaluated - len(passed_gate),
+    }
+
+    tickers = sorted(passed_gate | tagged)
     if not tickers:
         return IVSnapshotRefreshSummary(
             snapshot_date=today,
             written=0,
             skipped_no_data=[],
             skipped_rejected_move=[],
+            **gate_counts,
         )
 
     snapshots = await market.iv_snapshots(tickers)
@@ -246,7 +294,10 @@ async def refresh_iv_snapshots(
 
     await db.commit()
     logger.info(
-        "refresh-snapshots: wrote %d, no-data %d, rejected %d",
+        "refresh-snapshots: gate %d/%d passed (+%d tagged), wrote %d, no-data %d, rejected %d",
+        gate_counts["passed_gate"],
+        gate_counts["evaluated"],
+        len(tagged),
         written,
         len(skipped_no_data),
         len(skipped_rejected_move),
@@ -256,6 +307,7 @@ async def refresh_iv_snapshots(
         written=written,
         skipped_no_data=skipped_no_data,
         skipped_rejected_move=skipped_rejected_move,
+        **gate_counts,
     )
 
 

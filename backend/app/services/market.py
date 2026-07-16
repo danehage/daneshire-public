@@ -745,6 +745,7 @@ def _quote_from_raw(ticker: str, raw: dict) -> PriceQuote:
         change=change,
         change_pct=change_pct,
         volume=int(raw.get("volume") or 0),
+        avg_volume=int(raw.get("avgVolume", raw.get("averageVolume", 0)) or 0),
         market_cap=int(raw.get("marketCap") or 0),
     )
 

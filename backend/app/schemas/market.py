@@ -23,6 +23,7 @@ class PriceQuote(BaseModel):
     change: float = 0.0
     change_pct: float = 0.0
     volume: int = 0
+    avg_volume: int = 0
     market_cap: int = 0
 
 

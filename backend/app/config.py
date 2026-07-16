@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     tastytrade_client_secret: str = ""
     tastytrade_refresh_token: str = ""
 
+    # Earnings ironfly funnel — Stage-1 liquidity gate (#65).
+    # Tickers with upcoming earnings must clear all three thresholds to get
+    # nightly IV snapshots; the `earnings-candidate` tag bypasses the gate.
+    earnings_gate_min_price: float = 20.0
+    earnings_gate_min_avg_volume: int = 1_000_000
+    earnings_gate_min_market_cap: int = 2_000_000_000
+
     # Vision parsing
     gemini_api_key: str = ""
 

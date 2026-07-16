@@ -18,10 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.main import app
+from app.models.earnings import EarningsEvent
 from app.models.iv_snapshots import IVSnapshot
 from app.models.watchlist import WatchlistItem
 from app.schemas.iv import IVSnapshotRaw
-from app.services.market import OptionsDataUnavailable, get_market
+from app.schemas.market import PriceQuote
+from app.services.market import OptionsDataUnavailable, UpstreamError, get_market
 
 
 TEST_SECRET = "test-scheduler-secret"
@@ -42,14 +44,33 @@ async def setup_scheduler_secret():
 
 @pytest.fixture(autouse=True)
 async def cleanup(db_session: AsyncSession):
-    """Wipe iv_snapshots + watchlist_items before and after each test."""
-    await db_session.execute(delete(IVSnapshot))
-    await db_session.execute(delete(WatchlistItem))
+    """Wipe iv_snapshots + watchlist_items + earnings_events around each test."""
+    for model in (IVSnapshot, WatchlistItem, EarningsEvent):
+        await db_session.execute(delete(model))
     await db_session.commit()
     yield
-    await db_session.execute(delete(IVSnapshot))
-    await db_session.execute(delete(WatchlistItem))
+    for model in (IVSnapshot, WatchlistItem, EarningsEvent):
+        await db_session.execute(delete(model))
     await db_session.commit()
+
+
+@pytest.fixture(autouse=True)
+async def pin_gate_thresholds():
+    """Pin the Stage-1 gate thresholds so tests don't drift with defaults."""
+    original = (
+        settings.earnings_gate_min_price,
+        settings.earnings_gate_min_avg_volume,
+        settings.earnings_gate_min_market_cap,
+    )
+    settings.earnings_gate_min_price = 20.0
+    settings.earnings_gate_min_avg_volume = 1_000_000
+    settings.earnings_gate_min_market_cap = 2_000_000_000
+    yield
+    (
+        settings.earnings_gate_min_price,
+        settings.earnings_gate_min_avg_volume,
+        settings.earnings_gate_min_market_cap,
+    ) = original
 
 
 def auth_headers():
@@ -69,8 +90,9 @@ class _FakeMarket:
     result dict.
     """
 
-    def __init__(self, responses: dict):
+    def __init__(self, responses: dict, quotes: dict | None = None):
         self.responses = responses
+        self.quote_responses = quotes or {}
 
     async def iv_snapshots(self, tickers):
         out = {}
@@ -85,9 +107,20 @@ class _FakeMarket:
                 out[t] = value
         return out
 
+    async def quotes(self, tickers):
+        out = {}
+        for t in tickers:
+            t = t.upper()
+            value = self.quote_responses.get(t)
+            if value is None:
+                out[t] = UpstreamError(t, "no quote in fake")
+            else:
+                out[t] = value
+        return out
 
-def _override_market(responses: dict):
-    fake = _FakeMarket(responses)
+
+def _override_market(responses: dict, quotes: dict | None = None):
+    fake = _FakeMarket(responses, quotes)
     app.dependency_overrides[get_market] = lambda: fake
     return fake
 
@@ -96,6 +129,34 @@ async def _add_watchlist(db: AsyncSession, ticker: str, tags=("earnings-candidat
     item = WatchlistItem(ticker=ticker.upper(), tags=list(tags))
     db.add(item)
     await db.commit()
+
+
+async def _add_event(db: AsyncSession, ticker: str, days_out: int = 3):
+    db.add(
+        EarningsEvent(
+            ticker=ticker.upper(),
+            report_date=date.today() + timedelta(days=days_out),
+            report_time="amc",
+        )
+    )
+    await db.commit()
+
+
+def _quote(
+    ticker: str,
+    *,
+    price: float = 100.0,
+    volume: int = 3_000_000,
+    avg_volume: int = 5_000_000,
+    market_cap: int = 10_000_000_000,
+) -> PriceQuote:
+    return PriceQuote(
+        ticker=ticker,
+        price=price,
+        volume=volume,
+        avg_volume=avg_volume,
+        market_cap=market_cap,
+    )
 
 
 def _snapshot(ticker: str, *, iv30="0.30", rank="50", em="0.04") -> IVSnapshotRaw:
@@ -337,3 +398,150 @@ async def test_iv_rank_clamped_to_bounded_range(
     ).scalar_one()
     assert today_row.source == "self_252d"
     assert Decimal(today_row.iv_rank) == Decimal("100")
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 liquidity gate (#65)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_snapshots_liquid_ticker_with_upcoming_event(
+    client: AsyncClient, db_session: AsyncSession
+):
+    await _add_event(db_session, "NVDA", days_out=3)
+
+    _override_market(
+        {"NVDA": _snapshot("NVDA")},
+        quotes={"NVDA": _quote("NVDA")},
+    )
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["evaluated"] == 1
+    assert body["passed_gate"] == 1
+    assert body["failed_gate"] == 0
+    assert body["written"] == 1
+
+    rows = (await db_session.execute(select(IVSnapshot))).scalars().all()
+    assert [r.ticker for r in rows] == ["NVDA"]
+
+
+@pytest.mark.asyncio
+async def test_gate_thresholds_are_inclusive_and_each_metric_gates(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Exact-threshold quote passes; one ticker failing each metric fails."""
+    for t in ("EXACT", "LOWPX", "LOWVOL", "LOWCAP"):
+        await _add_event(db_session, t)
+
+    quotes = {
+        "EXACT": _quote(
+            "EXACT", price=20.0, avg_volume=1_000_000, market_cap=2_000_000_000
+        ),
+        "LOWPX": _quote("LOWPX", price=19.99),
+        "LOWVOL": _quote("LOWVOL", avg_volume=999_999),
+        "LOWCAP": _quote("LOWCAP", market_cap=1_999_999_999),
+    }
+    _override_market({"EXACT": _snapshot("EXACT")}, quotes=quotes)
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    body = response.json()
+    assert body["evaluated"] == 4
+    assert body["passed_gate"] == 1
+    assert body["failed_gate"] == 3
+    assert body["written"] == 1
+
+    rows = (await db_session.execute(select(IVSnapshot))).scalars().all()
+    assert [r.ticker for r in rows] == ["EXACT"]
+
+
+@pytest.mark.asyncio
+async def test_gate_quote_error_counts_as_failed(
+    client: AsyncClient, db_session: AsyncSession
+):
+    await _add_event(db_session, "NVDA")
+    await _add_event(db_session, "GHOST")
+
+    # GHOST has no quote configured → fake returns UpstreamError.
+    _override_market(
+        {"NVDA": _snapshot("NVDA")},
+        quotes={"NVDA": _quote("NVDA")},
+    )
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    body = response.json()
+    assert body["evaluated"] == 2
+    assert body["passed_gate"] == 1
+    assert body["failed_gate"] == 1
+    # Gate failures never reach the snapshot stage, so no skip buckets.
+    assert body["skipped_no_data"] == []
+    assert body["written"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tagged_ticker_bypasses_gate(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """An illiquid tagged ticker is snapshotted without being evaluated,
+    even when it also has an upcoming event."""
+    await _add_watchlist(db_session, "PENNY")
+    await _add_event(db_session, "PENNY", days_out=2)
+
+    # No quotes configured at all — the gate must not need one for PENNY.
+    _override_market({"PENNY": _snapshot("PENNY")})
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    body = response.json()
+    assert body["evaluated"] == 0
+    assert body["passed_gate"] == 0
+    assert body["failed_gate"] == 0
+    assert body["written"] == 1
+
+    rows = (await db_session.execute(select(IVSnapshot))).scalars().all()
+    assert [r.ticker for r in rows] == ["PENNY"]
+
+
+@pytest.mark.asyncio
+async def test_events_outside_horizon_not_evaluated(
+    client: AsyncClient, db_session: AsyncSession
+):
+    await _add_event(db_session, "LATER", days_out=20)
+    await _add_event(db_session, "GONE", days_out=-5)
+
+    _override_market({}, quotes={"LATER": _quote("LATER"), "GONE": _quote("GONE")})
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    body = response.json()
+    assert body["evaluated"] == 0
+    assert body["written"] == 0
+
+
+@pytest.mark.asyncio
+async def test_gate_falls_back_to_todays_volume_when_avg_missing(
+    client: AsyncClient, db_session: AsyncSession
+):
+    await _add_event(db_session, "NEWIPO")
+
+    _override_market(
+        {"NEWIPO": _snapshot("NEWIPO")},
+        quotes={"NEWIPO": _quote("NEWIPO", avg_volume=0, volume=2_000_000)},
+    )
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    body = response.json()
+    assert body["passed_gate"] == 1
+    assert body["written"] == 1
