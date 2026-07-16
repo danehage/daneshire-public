@@ -54,6 +54,13 @@ _IV_RANK_CUTOVER_ROWS = 252
 # inside this many calendar days (~10 trading days, the screener window).
 _GATE_HORIZON_DAYS = 14
 
+# refresh-snapshots fetches + writes in batches this size so no DB
+# transaction spans more than ~1 minute of Tastytrade calls. A gated set
+# of ~150 tickers fetched in one go held a Neon connection idle inside an
+# open transaction for ~7 minutes and it was closed server-side
+# (InterfaceError in prod, 2026-07-16).
+_SNAPSHOT_BATCH_SIZE = 25
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/internal", tags=["internal"])
@@ -257,42 +264,57 @@ async def refresh_iv_snapshots(
             **gate_counts,
         )
 
-    snapshots = await market.iv_snapshots(tickers)
+    # End the gate queries' transaction before any Tastytrade calls —
+    # the connection must not sit idle in an open transaction (see
+    # _SNAPSHOT_BATCH_SIZE note).
+    await db.commit()
 
     written = 0
     skipped_no_data: list[str] = []
     skipped_rejected_move: list[str] = []
 
-    for ticker in tickers:
-        result = snapshots.get(ticker)
-        if isinstance(result, MarketDataError):
-            skipped_no_data.append(ticker)
-            continue
-        if not isinstance(result, IVSnapshotRaw):  # defensive
-            skipped_no_data.append(ticker)
-            continue
-        if result.expected_move_pct is None:
-            skipped_rejected_move.append(ticker)
-            continue
+    for batch_start in range(0, len(tickers), _SNAPSHOT_BATCH_SIZE):
+        batch = tickers[batch_start : batch_start + _SNAPSHOT_BATCH_SIZE]
+        snapshots = await market.iv_snapshots(batch)
 
-        iv_rank, source = await _resolve_iv_rank(db, ticker, result)
+        for ticker in batch:
+            result = snapshots.get(ticker)
+            if isinstance(result, MarketDataError):
+                skipped_no_data.append(ticker)
+                continue
+            if not isinstance(result, IVSnapshotRaw):  # defensive
+                skipped_no_data.append(ticker)
+                continue
+            if result.expected_move_pct is None:
+                skipped_rejected_move.append(ticker)
+                continue
 
-        stmt = (
-            pg_insert(IVSnapshot)
-            .values(
-                ticker=ticker,
-                snapshot_date=today,
-                iv30=result.iv30,
-                iv_rank=iv_rank,
-                expected_move_pct=result.expected_move_pct,
-                source=source,
+            iv_rank, source = await _resolve_iv_rank(db, ticker, result)
+
+            stmt = (
+                pg_insert(IVSnapshot)
+                .values(
+                    ticker=ticker,
+                    snapshot_date=today,
+                    iv30=result.iv30,
+                    iv_rank=iv_rank,
+                    expected_move_pct=result.expected_move_pct,
+                    source=source,
+                )
+                .on_conflict_do_nothing(constraint="uq_iv_snapshots_ticker_date")
             )
-            .on_conflict_do_nothing(constraint="uq_iv_snapshots_ticker_date")
-        )
-        await db.execute(stmt)
-        written += 1
+            await db.execute(stmt)
+            written += 1
 
-    await db.commit()
+        # Commit per batch: completed batches survive a request timeout,
+        # and on_conflict_do_nothing makes a rerun cheap.
+        await db.commit()
+        logger.info(
+            "refresh-snapshots: %d/%d tickers done",
+            min(batch_start + _SNAPSHOT_BATCH_SIZE, len(tickers)),
+            len(tickers),
+        )
+
     logger.info(
         "refresh-snapshots: gate %d/%d passed (+%d tagged), wrote %d, no-data %d, rejected %d",
         gate_counts["passed_gate"],

@@ -93,8 +93,10 @@ class _FakeMarket:
     def __init__(self, responses: dict, quotes: dict | None = None):
         self.responses = responses
         self.quote_responses = quotes or {}
+        self.snapshot_calls: list[list[str]] = []
 
     async def iv_snapshots(self, tickers):
+        self.snapshot_calls.append(list(tickers))
         out = {}
         for t in tickers:
             t = t.upper()
@@ -526,6 +528,34 @@ async def test_events_outside_horizon_not_evaluated(
     body = response.json()
     assert body["evaluated"] == 0
     assert body["written"] == 0
+
+
+@pytest.mark.asyncio
+async def test_snapshots_fetched_and_committed_in_batches(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """The fetch/write cycle must be chunked so no transaction spans a
+    long provider fetch (Neon closes idle in-transaction connections)."""
+    from app.routes import internal as internal_module
+
+    monkeypatch.setattr(internal_module, "_SNAPSHOT_BATCH_SIZE", 2)
+
+    for t in ("AAA", "BBB", "CCC"):
+        await _add_watchlist(db_session, t)
+    fake = _override_market(
+        {t: _snapshot(t) for t in ("AAA", "BBB", "CCC")}
+    )
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    assert response.status_code == 200
+    assert response.json()["written"] == 3
+
+    assert fake.snapshot_calls == [["AAA", "BBB"], ["CCC"]]
+
+    rows = (await db_session.execute(select(IVSnapshot).order_by(IVSnapshot.ticker))).scalars().all()
+    assert [r.ticker for r in rows] == ["AAA", "BBB", "CCC"]
 
 
 @pytest.mark.asyncio
