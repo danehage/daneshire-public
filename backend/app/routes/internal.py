@@ -233,6 +233,14 @@ async def refresh_iv_snapshots(
         {(t or "").strip().upper() for t in rows if t} - tagged
     )
 
+    # Release the connection before ANY provider I/O. The FMP quote sweep
+    # alone can run minutes at season peak (the bulk endpoint currently
+    # fails per-chunk and falls back to ~600 throttled individual
+    # requests), and Neon closes connections left idle inside an open
+    # transaction (prod InterfaceError twice on 2026-07-16 — first during
+    # the Tastytrade fetch, then during this quote sweep).
+    await db.commit()
+
     passed_gate: set[str] = set()
     if candidates:
         quote_map = await market.quotes(candidates)
@@ -263,11 +271,6 @@ async def refresh_iv_snapshots(
             skipped_rejected_move=[],
             **gate_counts,
         )
-
-    # End the gate queries' transaction before any Tastytrade calls —
-    # the connection must not sit idle in an open transaction (see
-    # _SNAPSHOT_BATCH_SIZE note).
-    await db.commit()
 
     written = 0
     skipped_no_data: list[str] = []
