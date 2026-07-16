@@ -293,6 +293,89 @@ def _market_metrics_response(items: list[dict]) -> httpx.Response:
     return _ok({"data": {"items": items}})
 
 
+class TestRateLimitHandling:
+    def _token_or(self, request: httpx.Request, respond) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return _ok({"access_token": "access-xyz", "expires_in": 900})
+        return respond(request)
+
+    @pytest.mark.asyncio
+    async def test_429_retried_with_backoff_then_succeeds(self, monkeypatch):
+        from app.services import tastytrade_client as module
+
+        sleeps: list[float] = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(module, "_sleep", fake_sleep)
+
+        calls = {"n": 0}
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return _ok({}, status=429)
+            return _ok({"data": {"ok": True}})
+
+        client = _make_client(lambda r: self._token_or(r, respond))
+        try:
+            payload = await client._authed_get("/market-metrics", params={"symbols": "AAPL"})
+            assert payload == {"data": {"ok": True}}
+            assert calls["n"] == 3
+            assert sleeps == [1.0, 2.0]  # exponential backoff
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_429_exhausts_retries_and_raises(self, monkeypatch):
+        from app.services import tastytrade_client as module
+
+        async def fake_sleep(delay):
+            return None
+
+        monkeypatch.setattr(module, "_sleep", fake_sleep)
+
+        calls = {"n": 0}
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return _ok({}, status=429)
+
+        client = _make_client(lambda r: self._token_or(r, respond))
+        try:
+            with pytest.raises(TastytradeUnavailable):
+                await client._authed_get("/market-metrics")
+            # initial + _RATE_LIMIT_MAX_RETRIES attempts
+            assert calls["n"] == 4
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_requests_capped_at_max_concurrency(self):
+        import asyncio as aio
+
+        state = {"in_flight": 0, "max_in_flight": 0}
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/oauth/token":
+                return _ok({"access_token": "access-xyz", "expires_in": 900})
+            state["in_flight"] += 1
+            state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+            await aio.sleep(0.01)
+            state["in_flight"] -= 1
+            return _ok({"data": {}})
+
+        client = _make_client(respond)
+        try:
+            await aio.gather(
+                *[client._authed_get(f"/market-metrics?i={i}") for i in range(12)]
+            )
+            assert state["max_in_flight"] <= 4
+        finally:
+            await client.aclose()
+
+
 class TestGetOptionsChain:
     @pytest.mark.asyncio
     async def test_returns_empty_when_expiry_not_published(self):

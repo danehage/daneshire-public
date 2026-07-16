@@ -38,6 +38,16 @@ _REQUEST_TIMEOUT = 15.0
 # How stale a chain quote may be before we refuse to mid-mark it (ADR-0003).
 _MAX_CHAIN_AGE_SECONDS = 10 * 60
 
+# The gated earnings universe (#65) fans out ~4 requests per ticker with
+# 25 tickers in flight; unthrottled, Tastytrade 429'd ~40% of snapshot
+# fetches (prod, 2026-07-16). Cap concurrency and back off on 429.
+_MAX_CONCURRENT_REQUESTS = 4
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 1.0
+
+# Indirection so tests can stub the backoff sleep.
+_sleep = asyncio.sleep
+
 
 class TastytradeError(Exception):
     """Base for all TastytradeClient failures.
@@ -98,6 +108,7 @@ class TastytradeClient:
         self._access_token: Optional[str] = None
         self._access_token_expires_at: Optional[datetime] = None
         self._session_lock = asyncio.Lock()
+        self._request_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
 
     # ------------------------------------------------------------------
     # Auth
@@ -146,31 +157,51 @@ class TastytradeClient:
             return token
 
     async def _authed_get(self, path: str, params: Optional[dict] = None) -> dict:
-        """GET with bearer access-token; one transparent re-exchange on 401."""
+        """GET with bearer access-token.
+
+        Globally capped at ``_MAX_CONCURRENT_REQUESTS`` in flight (the
+        semaphore is held through backoff sleeps, so a rate-limited
+        request also slows the rest of the fleet down). One transparent
+        token re-exchange on 401; exponential backoff on 429.
+        """
         client = await self._http_client()
-        token = await self._ensure_access_token()
-        for attempt in range(2):
-            try:
-                resp = await client.get(
-                    path,
-                    params=params,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-            except httpx.RequestError as exc:
-                raise TastytradeUnavailable(f"network error on {path}: {exc}") from exc
-            if resp.status_code == 401 and attempt == 0:
-                logger.info("tastytrade 401 on %s — refreshing access token", path)
-                token = await self._ensure_access_token(force=True)
-                continue
-            if resp.status_code == 404:
-                raise TastytradeUnavailable(f"no data for {path}")
-            if resp.status_code != 200:
-                raise TastytradeUnavailable(
-                    f"HTTP {resp.status_code} on {path}: {resp.text[:200]}"
-                )
-            return resp.json() or {}
-        # Should be unreachable — second 401 falls through above.
-        raise TastytradeUnavailable(f"unauthenticated after retry on {path}")
+        async with self._request_semaphore:
+            token = await self._ensure_access_token()
+            refreshed = False
+            rate_attempt = 0
+            while True:
+                try:
+                    resp = await client.get(
+                        path,
+                        params=params,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                except httpx.RequestError as exc:
+                    raise TastytradeUnavailable(f"network error on {path}: {exc}") from exc
+                if resp.status_code == 401 and not refreshed:
+                    logger.info("tastytrade 401 on %s — refreshing access token", path)
+                    refreshed = True
+                    token = await self._ensure_access_token(force=True)
+                    continue
+                if resp.status_code == 429 and rate_attempt < _RATE_LIMIT_MAX_RETRIES:
+                    delay = _RATE_LIMIT_BASE_DELAY * (2**rate_attempt)
+                    rate_attempt += 1
+                    logger.warning(
+                        "tastytrade 429 on %s — retry %d/%d in %.1fs",
+                        path,
+                        rate_attempt,
+                        _RATE_LIMIT_MAX_RETRIES,
+                        delay,
+                    )
+                    await _sleep(delay)
+                    continue
+                if resp.status_code == 404:
+                    raise TastytradeUnavailable(f"no data for {path}")
+                if resp.status_code != 200:
+                    raise TastytradeUnavailable(
+                        f"HTTP {resp.status_code} on {path}: {resp.text[:200]}"
+                    )
+                return resp.json() or {}
 
     async def aclose(self) -> None:
         if self._http is not None and self._owns_http:
