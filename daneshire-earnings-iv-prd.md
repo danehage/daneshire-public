@@ -356,3 +356,47 @@ If steps 2–16 feel too long before any user-visible signal, the smallest end-t
 - Frontend: `EarningsPage` showing just the calendar (no IV rank, no trades)
 
 That slice exercises every layer (migration, seam, scheduler, public route, frontend) without any options data. If anything in the architecture is wrong, it surfaces here.
+
+---
+
+## 15. v0.1.1 addendum — ironfly funnel (July 2026)
+
+v0.1 shipped, and peak earnings season exposed the funnel gap: the calendar ingests
+every US listing (1200+ events per 4-week window at season peak) while IV snapshots
+only cover hand-tagged watchlist tickers, so ~97% of screener rows have no vol data
+and nothing ranks. Decisions below were made with Dane on 2026-07-16. The active
+strategy is the **short ironfly, entered T-1 to maximize IV, exited T+1 betting the
+crush outweighs the move** — a sharper version of §1's hypothesis.
+
+### Decisions
+
+1. **Universe gate: dynamic liquidity filter, not a static universe.** Snapshot
+   targets are derived nightly from upcoming events (next 14 calendar days), gated
+   by FMP batch quotes: price ≥ $20, avg volume ≥ 1M, market cap ≥ $2B (thresholds
+   in `config.py`, tunable). The `earnings-candidate` tag survives as a manual
+   always-include override. Rationale: the best ironfly candidates are often liquid
+   mid-caps outside the S&P 500; a static list misses them.
+2. **Screener defaults loose, highlight strict.** Default filters: IV rank ≥ 50,
+   edge ratio ≥ 1.2. Rows also clearing IV rank ≥ 70 AND edge ≥ 1.3 get a "prime"
+   highlight. Dane prefers seeing the wider set and making the call himself.
+3. **Scope: funnel + ironfly columns only.** T-1 entry alerts and the v0.2 pre-trade
+   modeler are deferred.
+4. **Exit model: simple credit-vs-move.** For a T+1 exit, POP/P-L-at-expiry math
+   overstates win odds. The app shows credit as % of spot vs expected and historical
+   moves ("the fly wins if the stock moves less than the credit"), slightly
+   conservative because it ignores residual extrinsic bought back at exit. No
+   post-crush IV modeling. Binding on the v0.2 modeler when it lands.
+
+### Ironfly-specific screen additions
+
+- **Max realized move (8q)** alongside the average — tail risk / wing-blowout column.
+  A 4% average with a 15% outlier is a different trade than a steady 4%.
+- **Entry date column**: AMC → enter that day before the close; BMO → enter the prior
+  trading day. `report_time = unknown` is flagged prominently — if you don't know
+  when T-1 is, the trade is untradeable as designed.
+- **Data-availability fix**: edge ratio needs ≥ 4 quarters of realized history, but
+  the DB only accumulates events forward from module launch. A one-shot historical
+  backfill (Finnhub past calendar, ~8 quarters, filtered to gated tickers, then the
+  existing realized-move backfill) unblocks the edge column.
+
+Build tracked in GitHub issues (liquidity gate → historical backfill → screener UI).
