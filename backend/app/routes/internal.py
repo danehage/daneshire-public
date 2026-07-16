@@ -35,6 +35,7 @@ from app.schemas.backup import BackupResponse
 from app.schemas.earnings import (
     BackfillRealizedMovesSummary,
     CalendarRefreshSummary,
+    HistoryBackfillSummary,
     IVSnapshotRefreshSummary,
 )
 from app.schemas.iv import IVSnapshotRaw
@@ -129,26 +130,26 @@ async def expire_stale_alerts(
     return {"status": "ok", "expired": expired}
 
 
-@router.post("/earnings/refresh-calendar", response_model=CalendarRefreshSummary)
-async def refresh_earnings_calendar(
-    market: MarketData = Depends(get_market),
-    db: AsyncSession = Depends(get_db),
-    _: None = Depends(verify_scheduler_secret),
-):
-    """Pull the next 4 weeks of earnings events from Finnhub and upsert them."""
-    today = date.today()
-    end = today + timedelta(days=28)
+async def _upsert_finnhub_events(
+    db: AsyncSession,
+    raw_events: list[dict],
+    only_tickers: Optional[set[str]] = None,
+) -> int:
+    """Parse + upsert raw Finnhub calendar events; return the upsert count.
 
-    try:
-        raw_events = await market.earnings_calendar(today, end)
-    except EarningsDateUnknown as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
+    Skips malformed rows. When ``only_tickers`` is given, events for other
+    tickers are dropped before touching the database (the historical
+    backfill pulls the full market and keeps only gated names). Existing
+    rows keep their ``realized_move_pct`` — the conflict update never
+    touches it. Does not commit.
+    """
     upserted = 0
     for event in raw_events:
         symbol = (event.get("symbol") or "").strip().upper()
         date_str = event.get("date") or ""
         if not symbol or not date_str:
+            continue
+        if only_tickers is not None and symbol not in only_tickers:
             continue
         try:
             report_date = date.fromisoformat(date_str)
@@ -186,36 +187,45 @@ async def refresh_earnings_calendar(
         )
         await db.execute(stmt)
         upserted += 1
+    return upserted
 
+
+@router.post("/earnings/refresh-calendar", response_model=CalendarRefreshSummary)
+async def refresh_earnings_calendar(
+    market: MarketData = Depends(get_market),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_scheduler_secret),
+):
+    """Pull the next 4 weeks of earnings events from Finnhub and upsert them."""
+    today = date.today()
+    end = today + timedelta(days=28)
+
+    try:
+        raw_events = await market.earnings_calendar(today, end)
+    except EarningsDateUnknown as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    upserted = await _upsert_finnhub_events(db, raw_events)
     await db.commit()
     logger.info("refresh-calendar: upserted %d events (%s → %s)", upserted, today, end)
     return CalendarRefreshSummary(upserted=upserted, start=today, end=end)
 
 
-@router.post("/earnings/refresh-snapshots", response_model=IVSnapshotRefreshSummary)
-async def refresh_iv_snapshots(
-    market: MarketData = Depends(get_market),
-    db: AsyncSession = Depends(get_db),
-    _: None = Depends(verify_scheduler_secret),
-):
-    """Write today's `iv_snapshots` row for every ticker that either has an
-    upcoming earnings event AND clears the Stage-1 liquidity gate, or carries
-    the `earnings-candidate` watchlist tag (manual override, gate bypassed).
+async def _gate_upcoming_tickers(
+    db: AsyncSession,
+    market: MarketData,
+) -> tuple[set[str], set[str], dict[str, int]]:
+    """Stage-1 liquidity gate (#65, PRD §15).
 
-    The gate (#65, PRD §15): FMP batch quotes on tickers with events in the
-    next 14 calendar days; keep price ≥ EARNINGS_GATE_MIN_PRICE, average
-    volume ≥ EARNINGS_GATE_MIN_AVG_VOLUME (today's volume when the provider
-    omits the average), market cap ≥ EARNINGS_GATE_MIN_MARKET_CAP. Quote
-    errors count as failed.
-
-    Skips tickers with no data (no chain / no quote / no token) and
-    tickers whose front-week straddle could not be priced (ADR-0003).
-    Per-ticker IV-rank source follows ADR-0004: provider value while
-    prior rows < 252; self-computed thereafter.
+    Returns ``(tagged, passed_gate, gate_counts)``: `earnings-candidate`
+    watchlist tickers (manual override, never evaluated), the subset of
+    tickers with events inside `_GATE_HORIZON_DAYS` whose FMP quote clears
+    price / avg-volume / market-cap thresholds (today's volume stands in
+    when the provider omits the average; quote errors count as failed),
+    and the evaluated / passed_gate / failed_gate counts.
     """
     today = date.today()
 
-    # Manual override: earnings-candidate tags are always snapshotted.
     stmt = select(WatchlistItem.ticker).where(WatchlistItem.tags.any("earnings-candidate"))
     rows = (await db.execute(stmt)).scalars().all()
     tagged = {(t or "").strip().upper() for t in rows if t}
@@ -261,6 +271,33 @@ async def refresh_iv_snapshots(
         "passed_gate": len(passed_gate),
         "failed_gate": evaluated - len(passed_gate),
     }
+    return tagged, passed_gate, gate_counts
+
+
+@router.post("/earnings/refresh-snapshots", response_model=IVSnapshotRefreshSummary)
+async def refresh_iv_snapshots(
+    market: MarketData = Depends(get_market),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_scheduler_secret),
+):
+    """Write today's `iv_snapshots` row for every ticker that either has an
+    upcoming earnings event AND clears the Stage-1 liquidity gate, or carries
+    the `earnings-candidate` watchlist tag (manual override, gate bypassed).
+
+    The gate (#65, PRD §15): FMP batch quotes on tickers with events in the
+    next 14 calendar days; keep price ≥ EARNINGS_GATE_MIN_PRICE, average
+    volume ≥ EARNINGS_GATE_MIN_AVG_VOLUME (today's volume when the provider
+    omits the average), market cap ≥ EARNINGS_GATE_MIN_MARKET_CAP. Quote
+    errors count as failed.
+
+    Skips tickers with no data (no chain / no quote / no token) and
+    tickers whose front-week straddle could not be priced (ADR-0003).
+    Per-ticker IV-rank source follows ADR-0004: provider value while
+    prior rows < 252; self-computed thereafter.
+    """
+    today = date.today()
+
+    tagged, passed_gate, gate_counts = await _gate_upcoming_tickers(db, market)
 
     tickers = sorted(passed_gate | tagged)
     if not tickers:
@@ -452,6 +489,83 @@ async def backfill_realized_moves(
         skipped_no_history=skipped_no_history,
         total_events=total_events,
     )
+
+
+_HISTORY_CHUNK_DAYS = 30
+
+
+@router.post("/earnings/backfill-history", response_model=HistoryBackfillSummary)
+async def backfill_earnings_history(
+    quarters: int = Query(default=8, ge=1, le=12),
+    market: MarketData = Depends(get_market),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_scheduler_secret),
+):
+    """One-shot historical calendar backfill (#66, PRD §15).
+
+    Pulls the past ``quarters`` quarters of Finnhub earnings events in
+    30-day chunks and upserts only the tickers the Stage-1 gate currently
+    admits (plus `earnings-candidate` tags). Gives newly gated tickers the
+    past-event rows the edge ratio needs; realized moves themselves are
+    computed by the existing paginated ``backfill-realized-moves``.
+
+    Idempotent — re-running upserts in place and never touches
+    ``realized_move_pct``. Failed chunks are skipped and counted so a
+    partial Finnhub outage doesn't lose the whole run; re-run to fill gaps.
+    Commits per chunk, so a request timeout keeps completed chunks.
+    """
+    today = date.today()
+    end = today - timedelta(days=1)
+    start = today - timedelta(days=quarters * 92)
+
+    tagged, passed_gate, _gate_counts = await _gate_upcoming_tickers(db, market)
+    targets = tagged | passed_gate
+
+    summary = HistoryBackfillSummary(
+        start=start,
+        end=end,
+        target_tickers=len(targets),
+        events_upserted=0,
+        chunks_total=0,
+        chunks_empty=0,
+        chunks_failed=0,
+    )
+    if not targets:
+        return summary
+
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=_HISTORY_CHUNK_DAYS - 1), end)
+        summary.chunks_total += 1
+        try:
+            raw_events = await market.earnings_calendar(cursor, chunk_end)
+        except EarningsDateUnknown as exc:
+            logger.warning(
+                "backfill-history: chunk %s → %s failed: %s", cursor, chunk_end, exc
+            )
+            summary.chunks_failed += 1
+            cursor = chunk_end + timedelta(days=1)
+            continue
+
+        upserted = await _upsert_finnhub_events(db, raw_events, only_tickers=targets)
+        await db.commit()
+        if upserted == 0:
+            summary.chunks_empty += 1
+        summary.events_upserted += upserted
+        cursor = chunk_end + timedelta(days=1)
+
+    logger.info(
+        "backfill-history: %d events for %d tickers (%s → %s), "
+        "%d/%d chunks empty, %d failed",
+        summary.events_upserted,
+        summary.target_tickers,
+        start,
+        end,
+        summary.chunks_empty,
+        summary.chunks_total,
+        summary.chunks_failed,
+    )
+    return summary
 
 
 @router.post("/db/backup", response_model=BackupResponse)

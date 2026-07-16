@@ -64,6 +64,18 @@ class BackfillRealizedMovesSummary(BaseModel):
     total_events: int
 
 
+class HistoryBackfillSummary(BaseModel):
+    """Result of the one-shot historical calendar backfill (#66)."""
+
+    start: date
+    end: date
+    target_tickers: int
+    events_upserted: int
+    chunks_total: int
+    chunks_empty: int
+    chunks_failed: int
+
+
 # ---------------------------------------------------------------------------
 # Earnings trades — CRUD schemas (issue #16, ADR-0005)
 # ---------------------------------------------------------------------------
