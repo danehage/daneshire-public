@@ -16,7 +16,7 @@ function PnlCell({ value }) {
   }
   const n = Number(value);
   return (
-    <span className={`font-mono ${n >= 0 ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
+    <span className={`font-mono ${n >= 0 ? "text-gain" : "text-loss"}`}>
       {n >= 0 ? "+" : ""}
       {money(n)}
     </span>
@@ -62,7 +62,7 @@ function CampaignTable({ campaigns, showClosed }) {
               </Link>
               {c.parse_error && (
                 <span
-                  className="ml-2 text-xs text-amber-700 dark:text-amber-400"
+                  className="ml-2 text-xs text-warning"
                   title={c.parse_error}
                 >
                   ⚠ parse
@@ -96,7 +96,7 @@ export default function TradesPage() {
     return <p className="text-sm text-mid-brown p-6">Loading trade campaigns…</p>;
   }
   if (error) {
-    return <p className="text-sm text-red-700 p-6">Failed to load campaigns: {error.message}</p>;
+    return <p className="text-sm text-error p-6">Failed to load campaigns: {error.message}</p>;
   }
 
   const open = campaigns.filter((c) => c.status === "open");

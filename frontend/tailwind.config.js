@@ -1,6 +1,9 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,jsx}"],
+  // The app is light-only. Class strategy keeps OS-level dark preference from
+  // activating dark: variants against the always-cream background.
+  darkMode: "class",
   theme: {
     extend: {
       colors: {

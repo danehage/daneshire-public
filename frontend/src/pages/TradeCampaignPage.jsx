@@ -4,8 +4,8 @@ import remarkGfm from "remark-gfm";
 import { useTradeCampaign } from "../hooks/useTradeCampaigns";
 
 const STATUS_STYLES = {
-  open: "border-green-400 text-green-700 bg-green-50 dark:bg-green-950 dark:text-green-300",
-  closed: "border-ink text-ink bg-warm-white dark:bg-transparent dark:text-cream",
+  open: "border-success text-success bg-success/10",
+  closed: "border-ink text-ink bg-warm-white",
   archived: "border-ink/40 text-mid-brown",
 };
 
@@ -26,7 +26,7 @@ export default function TradeCampaignPage() {
     return <p className="text-sm text-mid-brown p-6">Loading campaign…</p>;
   }
   if (error) {
-    return <p className="text-sm text-red-700 p-6">Failed to load campaign: {error.message}</p>;
+    return <p className="text-sm text-error p-6">Failed to load campaign: {error.message}</p>;
   }
 
   const pnl = campaign.realized_pnl !== null && campaign.realized_pnl !== undefined
@@ -41,7 +41,7 @@ export default function TradeCampaignPage() {
         </Link>
       </div>
 
-      <div className="border-2 border-ink bg-warm-white dark:bg-transparent p-4 space-y-3">
+      <div className="border-2 border-ink bg-warm-white p-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="text-2xl font-bold font-mono">
             <Link to={`/ticker/${campaign.ticker}`} className="hover:underline">
@@ -63,7 +63,7 @@ export default function TradeCampaignPage() {
           </Fact>
           <Fact label="Realized P/L">
             {pnl !== null ? (
-              <span className={pnl >= 0 ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}>
+              <span className={pnl >= 0 ? "text-gain" : "text-loss"}>
                 {pnl >= 0 ? "+" : ""}
                 {pnl.toLocaleString("en-US", { style: "currency", currency: "USD" })}
               </span>
@@ -85,13 +85,13 @@ export default function TradeCampaignPage() {
           )}
         </div>
         {campaign.parse_error && (
-          <p className="text-xs text-amber-700 dark:text-amber-400 font-mono">
+          <p className="text-xs text-warning font-mono">
             ⚠ frontmatter did not fully parse ({campaign.parse_error}) — showing raw file.
           </p>
         )}
       </div>
 
-      <div className="text-sm text-ink dark:text-cream font-serif prose prose-sm max-w-none prose-headings:text-dark-brown dark:prose-invert prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-table:text-xs">
+      <div className="text-sm text-ink font-serif prose prose-sm max-w-none prose-headings:text-dark-brown prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-table:text-xs">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{campaign.body}</ReactMarkdown>
       </div>
 

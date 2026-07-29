@@ -12,9 +12,9 @@ const REPORT_TIME_LABEL = {
 };
 
 const REPORT_TIME_CLASS = {
-  bmo: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-  amc: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
-  unknown: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  bmo: 'bg-blue-100 text-blue-800',
+  amc: 'bg-amber-100 text-amber-800',
+  unknown: 'bg-gray-100 text-gray-600',
 };
 
 function formatDate(dateStr) {
@@ -115,7 +115,7 @@ function EventsTable({ events, sortField, sortDir, onSort }) {
           {events.map((event) => (
             <tr
               key={event.id}
-              className="border-b border-gray-200 dark:border-gray-700 hover:bg-warm-white transition-colors"
+              className="border-b border-gray-200 hover:bg-warm-white transition-colors"
             >
               <td className="px-4 py-3 font-mono font-bold">
                 <Link

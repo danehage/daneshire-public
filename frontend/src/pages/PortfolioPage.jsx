@@ -36,12 +36,12 @@ function HoldingsBadge({ type }) {
 }
 
 const GRADE_STYLES = {
-  Running: "border-green-400 text-green-700 bg-green-50 dark:bg-green-950 dark:text-green-300 dark:border-green-700",
-  Cresting: "border-amber-400 text-amber-700 bg-amber-50 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-700",
-  Distribution: "border-orange-400 text-orange-700 bg-orange-50 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-700",
-  "Thesis complete": "border-orange-500 text-orange-800 bg-orange-50 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-600",
-  Climax: "border-red-400 text-red-700 bg-red-50 dark:bg-red-950 dark:text-red-300 dark:border-red-600",
-  Broken: "border-red-700 text-red-900 bg-red-100 dark:bg-red-950 dark:text-red-200 dark:border-red-500",
+  Running: "border-green-400 text-green-700 bg-green-50",
+  Cresting: "border-amber-400 text-amber-700 bg-amber-50",
+  Distribution: "border-orange-400 text-orange-700 bg-orange-50",
+  "Thesis complete": "border-orange-500 text-orange-800 bg-orange-50",
+  Climax: "border-red-400 text-red-700 bg-red-50",
+  Broken: "border-red-700 text-red-900 bg-red-100",
 };
 
 function GradeBadge({ grade, stop, hvNow, atrPct }) {
