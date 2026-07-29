@@ -255,8 +255,13 @@ if STATIC_DIR.exists():
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
 
-        # Serve index.html for all other routes (SPA client-side routing)
+        # Serve index.html for all other routes (SPA client-side routing).
+        # no-cache forces revalidation on every load — without it, browsers
+        # heuristically cache index.html (10% of Last-Modified age) and keep
+        # loading the previous deploy's hashed bundles for hours after a fix
+        # ships. The bundles under /assets are content-hashed, so they stay
+        # safely cacheable.
         index_path = STATIC_DIR / "index.html"
         if index_path.exists():
-            return FileResponse(index_path)
+            return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
         raise HTTPException(status_code=404, detail="Frontend not built")
