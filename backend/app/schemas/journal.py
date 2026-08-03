@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +33,27 @@ class JournalEntryResponse(BaseModel):
 
     id: UUID
     watchlist_id: Optional[UUID] = None
+    ticker: Optional[str] = None
+    title: Optional[str] = None
+    entry_type: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class JournalFeedEntry(BaseModel):
+    """One item in the merged journal feed (``GET /api/journal``).
+
+    ``source="app"`` rows are real ``journal_entries`` rows (``id`` is their
+    UUID, editable/deletable). ``source="vault"`` entries are parsed at read
+    time from synced campaign bodies — read-only, with a synthetic
+    ``vault:{campaign_id}:{section}`` id and ``campaign_id`` set for linking.
+    """
+
+    id: str
+    source: Literal["app", "vault"] = "app"
+    watchlist_id: Optional[UUID] = None
+    campaign_id: Optional[UUID] = None
     ticker: Optional[str] = None
     title: Optional[str] = None
     entry_type: str

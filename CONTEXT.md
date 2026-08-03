@@ -62,6 +62,10 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 **Trade Campaign (#61)** — a vault trade journal synced into `trade_campaigns` and shown on `/trades`. **The DaneBrain Obsidian vault is authoritative** (`~/Developer/DaneBrain/70-Trades/{Open,Closed}`, one file per campaign, YAML frontmatter); the app is a read-only mirror and never writes back. One-way whole-vault sync via `scripts/sync_vault.py` (launchd every ~20 min on the Mac; Obsidian Sync funnels PC edits there; script is idempotent and can also run on the PC). Keyed by filename stem because files move `Open/` → `Closed/`; files that disappear are soft-archived. Frontmatter parses defensively (hand-typed commas, `2026-04-XX` placeholders → null) with per-file errors surfaced, never batch failures. Side effect: open campaigns upsert their watchlist item (`status=owned`, `entry_date` from `opened:`, `entry_price` from `cost_basis:`) — this is what feeds the Sell-side Grade's run anchoring and gap gauge.
 
+## Journal
+
+**Journal Feed** — the merged list served by `GET /api/journal`: app-authored `journal_entries` rows plus **virtual entries** projected at read time from synced Trade Campaign bodies (`## Thesis` → `thesis`, dated `### ` Timeline sections → `note`, `## Exit / Review` → `review`; other `##` sections ignored). Vault-sourced entries are read-only — synthetic `vault:{campaign_id}:{section}` ids, `source="vault"`, never copied into `journal_entries` (the vault stays authoritative, per Trade Campaign). Archived campaigns don't feed it. Parser: `backend/app/services/campaign_journal.py`.
+
 ## Scanner
 
 **HV Rank** — historical-volatility-rank proxy. Not implied volatility. UI labels must say "HV Rank", never "IV Rank".

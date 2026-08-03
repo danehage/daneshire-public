@@ -5,18 +5,19 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.journal import JournalEntry
+from app.models.trade_campaigns import TradeCampaign
 from app.models.watchlist import WatchlistItem
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup(db_session: AsyncSession):
-    """Clean up journal entries and watchlist items before and after each test."""
-    await db_session.execute(delete(JournalEntry))
-    await db_session.execute(delete(WatchlistItem))
+    """Clean up journal entries, campaigns, and watchlist items around each test."""
+    for model in (JournalEntry, TradeCampaign, WatchlistItem):
+        await db_session.execute(delete(model))
     await db_session.commit()
     yield
-    await db_session.execute(delete(JournalEntry))
-    await db_session.execute(delete(WatchlistItem))
+    for model in (JournalEntry, TradeCampaign, WatchlistItem):
+        await db_session.execute(delete(model))
     await db_session.commit()
 
 
@@ -389,3 +390,146 @@ async def test_delete_journal_entry_not_found(client: AsyncClient):
     """Test deleting a non-existent journal entry returns 404."""
     response = await client.delete("/api/journal/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404
+
+
+# Merged feed tests (GET /api/journal + vault campaign entries)
+
+_CAMPAIGN_BODY = """
+## Thesis
+
+Oversold bounce with beat-and-raise fundamentals.
+
+## Timeline
+
+### 2026-07-14 — Bought Shares
+- Bought 32 @ $1,226.60
+
+### 2026-07-29 — Sold Shares, Campaign Closed
+- Sold 32 @ $1,394.57
+
+## P&L Summary
+
+| ignored | table |
+
+## Exit / Review
+
+Sold into the pre-earnings run-up.
+"""
+
+
+async def _create_campaign(db_session: AsyncSession, **overrides) -> TradeCampaign:
+    from datetime import datetime, timezone, date
+
+    fields = dict(
+        title="FICO-2026-07",
+        vault_path="Closed/FICO-2026-07.md",
+        ticker="FICO",
+        status="closed",
+        body=_CAMPAIGN_BODY,
+        content_hash="x" * 64,
+        opened_on=date(2026, 7, 14),
+        closed_on=date(2026, 7, 29),
+        synced_at=datetime.now(timezone.utc),
+    )
+    fields.update(overrides)
+    campaign = TradeCampaign(**fields)
+    db_session.add(campaign)
+    await db_session.commit()
+    await db_session.refresh(campaign)
+    return campaign
+
+
+@pytest.mark.asyncio
+async def test_feed_includes_vault_campaign_entries(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Campaign bodies are projected into read-only feed entries."""
+    campaign = await _create_campaign(db_session)
+
+    response = await client.get("/api/journal")
+    assert response.status_code == 200
+    data = response.json()
+
+    # thesis + 2 timeline + review; P&L section ignored
+    assert len(data) == 4
+    assert all(e["source"] == "vault" for e in data)
+    assert all(e["ticker"] == "FICO" for e in data)
+    assert all(e["campaign_id"] == str(campaign.id) for e in data)
+
+    by_type = {}
+    for e in data:
+        by_type.setdefault(e["entry_type"], []).append(e)
+    assert len(by_type["thesis"]) == 1
+    assert len(by_type["note"]) == 2
+    assert len(by_type["review"]) == 1
+    assert "Oversold bounce" in by_type["thesis"][0]["content"]
+    assert by_type["review"][0]["created_at"].startswith("2026-07-29")
+
+    titles = {e["title"] for e in by_type["note"]}
+    assert titles == {"Bought Shares", "Sold Shares, Campaign Closed"}
+
+
+@pytest.mark.asyncio
+async def test_feed_merges_app_and_vault_sorted_desc(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """App entries and vault entries interleave, newest first."""
+    await _create_campaign(db_session)
+    await client.post(
+        "/api/journal",
+        json={"ticker": "NVDA", "entry_type": "note", "content": "App-authored note"},
+    )
+
+    response = await client.get("/api/journal")
+    data = response.json()
+    assert len(data) == 5
+    # The app entry was created now (2026+), newest in the feed
+    assert data[0]["source"] == "app"
+    assert data[0]["ticker"] == "NVDA"
+    created = [e["created_at"] for e in data]
+    assert created == sorted(created, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_feed_ticker_and_type_filters_cover_vault(
+    client: AsyncClient, db_session: AsyncSession
+):
+    await _create_campaign(db_session)
+    await client.post(
+        "/api/journal",
+        json={"ticker": "NVDA", "entry_type": "note", "content": "Other ticker"},
+    )
+
+    response = await client.get("/api/journal?ticker=fico")
+    assert {e["ticker"] for e in response.json()} == {"FICO"}
+    assert len(response.json()) == 4
+
+    response = await client.get("/api/journal?ticker=FICO&entry_type=review")
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["entry_type"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_feed_excludes_archived_campaigns(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Archived = file deleted from the vault; the feed respects the deletion."""
+    await _create_campaign(db_session, status="archived")
+
+    response = await client.get("/api/journal")
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_feed_vault_entries_reject_mutation(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Synthetic vault ids are not UUIDs — PATCH/DELETE can't touch them."""
+    campaign = await _create_campaign(db_session)
+    vault_id = f"vault:{campaign.id}:thesis"
+
+    response = await client.patch(f"/api/journal/{vault_id}", json={"content": "nope"})
+    assert response.status_code == 422
+    response = await client.delete(f"/api/journal/{vault_id}")
+    assert response.status_code == 422

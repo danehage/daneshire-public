@@ -1,4 +1,5 @@
 import { useState, useDeferredValue } from "react";
+import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import {
   useAllJournalEntries,
@@ -112,8 +113,18 @@ function AddStandaloneEntryForm({ onClose }) {
   );
 }
 
-function formatDate(dateString) {
+function formatDate(dateString, dateOnly = false) {
   const date = new Date(dateString);
+  if (dateOnly) {
+    // Vault entry dates are day-precision (stored as midnight UTC) — render
+    // in UTC so the local-timezone shift doesn't roll them back a day.
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+  }
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -210,17 +221,28 @@ export default function JournalPage() {
                       {entry.title}
                     </span>
                   )}
+                  {entry.source === "vault" && (
+                    <Link
+                      to={`/trades/${entry.campaign_id}`}
+                      className="text-xs px-2 py-0.5 border border-ink bg-cream text-mid-brown uppercase tracking-wide hover:text-ink hover:bg-warm-white"
+                      title="Synced from the DaneBrain vault — read-only. Click to open the campaign."
+                    >
+                      Vault
+                    </Link>
+                  )}
                   <span className="text-xs text-light-brown">
-                    {formatDate(entry.created_at)}
+                    {formatDate(entry.created_at, entry.source === "vault")}
                   </span>
                 </div>
-                <button
-                  onClick={() => deleteEntry.mutate(entry.id)}
-                  disabled={deleteEntry.isPending}
-                  className="text-light-brown hover:text-error font-bold text-xl"
-                >
-                  ×
-                </button>
+                {entry.source !== "vault" && (
+                  <button
+                    onClick={() => deleteEntry.mutate(entry.id)}
+                    disabled={deleteEntry.isPending}
+                    className="text-light-brown hover:text-error font-bold text-xl"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
               <div className="text-sm text-ink font-serif prose prose-sm max-w-none prose-headings:text-dark-brown prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0">
                 <ReactMarkdown>{entry.content}</ReactMarkdown>

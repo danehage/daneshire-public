@@ -8,15 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.journal import JournalEntry
+from app.models.trade_campaigns import TradeCampaign
 from app.models.watchlist import WatchlistItem
 from app.routes.dependencies import load_watchlist_item
 from app.schemas.journal import (
     JournalEntryCreate,
     JournalEntryUpdate,
     JournalEntryResponse,
+    JournalFeedEntry,
     JournalSearchResult,
     StandaloneJournalEntryCreate,
 )
+from app.services.campaign_journal import parse_campaign_entries
 
 router = APIRouter(tags=["journal"])
 
@@ -62,32 +65,59 @@ async def create_journal_entry(
     return db_entry
 
 
-@router.get("/api/journal", response_model=list[JournalEntryResponse])
+@router.get("/api/journal", response_model=list[JournalFeedEntry])
 async def list_all_journal_entries(
     ticker: str | None = Query(default=None, description="Filter by ticker symbol"),
     entry_type: Literal["thesis", "note", "entry", "exit", "adjustment", "review"] | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all journal entries, optionally filtered by ticker or type."""
-    query = select(JournalEntry).order_by(JournalEntry.created_at.desc())
-
+    """The merged journal feed: app-authored entries plus read-only virtual
+    entries parsed from synced vault campaign bodies (#61 mirror — the vault
+    is authoritative, so its entries are projected at read time, never
+    copied into journal_entries)."""
+    ticker_col = func.coalesce(JournalEntry.ticker, WatchlistItem.ticker).label(
+        "ticker"
+    )
+    query = (
+        select(JournalEntry, ticker_col)
+        .outerjoin(WatchlistItem, JournalEntry.watchlist_id == WatchlistItem.id)
+        .order_by(JournalEntry.created_at.desc())
+    )
     if ticker:
-        # Match standalone entries by ticker OR watchlist entries by watchlist ticker
-        watchlist_subq = select(WatchlistItem.id).where(
-            WatchlistItem.ticker == ticker.upper()
-        )
-        query = query.where(
-            (JournalEntry.ticker == ticker.upper()) |
-            (JournalEntry.watchlist_id.in_(watchlist_subq))
-        )
-
+        query = query.where(ticker_col == ticker.upper())
     if entry_type:
         query = query.where(JournalEntry.entry_type == entry_type)
+    result = await db.execute(query.limit(limit))
 
-    query = query.limit(limit)
-    result = await db.execute(query)
-    return result.scalars().all()
+    feed = [
+        JournalFeedEntry(
+            id=str(row.JournalEntry.id),
+            source="app",
+            watchlist_id=row.JournalEntry.watchlist_id,
+            ticker=row.ticker,
+            title=row.JournalEntry.title,
+            entry_type=row.JournalEntry.entry_type,
+            content=row.JournalEntry.content,
+            created_at=row.JournalEntry.created_at,
+            updated_at=row.JournalEntry.updated_at,
+        )
+        for row in result.all()
+    ]
+
+    # Archived campaigns are files deleted from the vault — the mirror
+    # respects the deletion, so they don't feed the journal either.
+    campaign_query = select(TradeCampaign).where(TradeCampaign.status != "archived")
+    if ticker:
+        campaign_query = campaign_query.where(TradeCampaign.ticker == ticker.upper())
+    campaigns = (await db.execute(campaign_query)).scalars().all()
+    for campaign in campaigns:
+        feed.extend(parse_campaign_entries(campaign))
+
+    if entry_type:
+        feed = [e for e in feed if e.entry_type == entry_type]
+    feed.sort(key=lambda e: e.created_at, reverse=True)
+    return feed[:limit]
 
 
 @router.post("/api/journal", response_model=JournalEntryResponse, status_code=201)
