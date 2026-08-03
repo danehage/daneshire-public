@@ -1,8 +1,6 @@
-from datetime import datetime
-from typing import Optional
-from uuid import UUID
+from pydantic import BaseModel
 
-from pydantic import BaseModel, ConfigDict
+from app.schemas.journal import JournalFeedEntry
 
 
 class WatchlistCounts(BaseModel):
@@ -18,18 +16,7 @@ class AlertCounts(BaseModel):
     triggered_total: int = 0
 
 
-class RecentJournalEntry(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    watchlist_id: UUID
-    ticker: str
-    entry_type: str
-    content: str
-    created_at: datetime
-
-
 class DashboardSummary(BaseModel):
     watchlist: WatchlistCounts
     alerts: AlertCounts
-    recent_journal: list[RecentJournalEntry]
+    recent_journal: list[JournalFeedEntry]

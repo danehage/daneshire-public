@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import Card from "../Card";
+import { useShareMode, MASKED_MONEY } from "../../hooks/useShareMode";
 
 function freshnessLabel(lastSnapshotAt) {
   if (!lastSnapshotAt) return null;
@@ -18,7 +19,11 @@ function fmt(value) {
 }
 
 export default function PortfolioSummaryCard({ portfolio }) {
-  if (!portfolio || portfolio.account_id == null) {
+  const { shareMode } = useShareMode();
+  // The all-accounts aggregate legitimately has account_id: null, so only a
+  // missing portfolio (no positions AND no snapshot — the caller's gate)
+  // means "nothing uploaded yet".
+  if (!portfolio) {
     return (
       <Card shadow="responsive" className="p-4 sm:p-6">
         <h3 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
@@ -51,7 +56,7 @@ export default function PortfolioSummaryCard({ portfolio }) {
         Portfolio
       </h3>
       <p className="text-3xl sm:text-4xl font-serif font-bold text-ink mb-1">
-        ${fmt(total_value)}
+        {shareMode ? MASKED_MONEY : `$${fmt(total_value)}`}
       </p>
       {dayChangeNum != null && (
         <p
@@ -59,7 +64,9 @@ export default function PortfolioSummaryCard({ portfolio }) {
             isPositive ? "text-gain" : isNegative ? "text-loss" : "text-mid-brown"
           }`}
         >
-          {dayChangeNum >= 0 ? "+" : ""}${fmt(day_change)}
+          {shareMode
+            ? `${dayChangeNum >= 0 ? "+" : "−"}${MASKED_MONEY}`
+            : `${dayChangeNum >= 0 ? "+" : ""}$${fmt(day_change)}`}
           {dayChangePct != null && ` (${dayChangeNum >= 0 ? "+" : ""}${dayChangePct}%)`}
         </p>
       )}

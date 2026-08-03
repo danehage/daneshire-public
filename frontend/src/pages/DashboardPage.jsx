@@ -6,11 +6,21 @@ import { usePortfolio } from "../hooks/usePortfolio";
 import PortfolioSummaryCard from "../components/portfolio/PortfolioSummaryCard";
 import Card from "../components/Card";
 import Badge, { ENTRY_TYPE_TONES } from "../components/Badge";
+import { useShareMode, maskDollarsInText } from "../hooks/useShareMode";
 
 function formatDate(dateString) {
   const date = new Date(dateString);
   const now = new Date();
   const diffMs = now - date;
+
+  // Future-dated vault entries (planned exits) show their date, not "just now"
+  if (diffMs < -86400000) {
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  }
 
   // Handle clock skew or very recent entries
   if (diffMs < 60000) return "just now";
@@ -50,10 +60,10 @@ function SummaryCard({ title, value, subtitle, linkTo, linkLabel }) {
 }
 
 function JournalEntryRow({ entry }) {
+  const { shareMode } = useShareMode();
+  const content = shareMode ? maskDollarsInText(entry.content) : entry.content;
   const truncatedContent =
-    entry.content.length > 120
-      ? entry.content.substring(0, 120) + "..."
-      : entry.content;
+    content.length > 120 ? content.substring(0, 120) + "..." : content;
 
   return (
     <div className="border-b-2 border-ink last:border-b-0 py-4 px-4 hover:bg-cream transition-colors">
@@ -281,7 +291,7 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-serif text-2xl text-ink">Recent Activity</h2>
           <Link
-            to="/watchlist"
+            to="/journal"
             className="text-sm text-accent hover:text-accent-hover font-medium"
           >
             View all →

@@ -2,7 +2,7 @@
 Dashboard API routes for summary statistics and recent activity.
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func
@@ -10,14 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.watchlist import WatchlistItem
-from app.models.journal import JournalEntry
 from app.models.alert import Alert
 from app.schemas.dashboard import (
     DashboardSummary,
     WatchlistCounts,
     AlertCounts,
-    RecentJournalEntry,
 )
+from app.services.journal_feed import build_journal_feed
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -37,7 +36,10 @@ async def get_dashboard_summary(
 
     watchlist = WatchlistCounts(
         watching=watchlist_counts.get("watching", 0),
-        open=watchlist_counts.get("position_open", 0),
+        # "owned" superseded "position_open" when the vault sync landed (#61);
+        # count both so open positions reflect the statuses actually in use.
+        open=watchlist_counts.get("owned", 0)
+        + watchlist_counts.get("position_open", 0),
         closed=watchlist_counts.get("closed", 0),
         total=sum(watchlist_counts.values()),
     )
@@ -69,26 +71,9 @@ async def get_dashboard_summary(
         triggered_total=triggered_total_count,
     )
 
-    # Get recent journal entries with ticker info (last 10)
-    journal_result = await db.execute(
-        select(JournalEntry, WatchlistItem.ticker)
-        .join(WatchlistItem, JournalEntry.watchlist_id == WatchlistItem.id)
-        .order_by(JournalEntry.created_at.desc())
-        .limit(10)
-    )
-
-    recent_journal = []
-    for entry, ticker in journal_result.all():
-        recent_journal.append(
-            RecentJournalEntry(
-                id=entry.id,
-                watchlist_id=entry.watchlist_id,
-                ticker=ticker,
-                entry_type=entry.entry_type,
-                content=entry.content,
-                created_at=entry.created_at,
-            )
-        )
+    # Recent activity = the merged journal feed (app entries + vault
+    # campaign projections), same source as the Journal page.
+    recent_journal = await build_journal_feed(db, limit=10)
 
     return DashboardSummary(
         watchlist=watchlist,
