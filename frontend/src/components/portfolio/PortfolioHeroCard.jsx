@@ -1,4 +1,5 @@
 import Card from "../Card";
+import { useShareMode, MASKED_MONEY } from "../../hooks/useShareMode";
 
 function freshnessLabel(lastSnapshotAt) {
   if (!lastSnapshotAt) return null;
@@ -18,6 +19,7 @@ function fmt(value) {
 }
 
 export default function PortfolioHeroCard({ portfolio }) {
+  const { shareMode } = useShareMode();
   if (!portfolio) return null;
 
   const { total_value, day_change, cash_balance, last_snapshot_at } = portfolio;
@@ -40,7 +42,7 @@ export default function PortfolioHeroCard({ portfolio }) {
             Total Value
           </div>
           <div className="text-2xl font-serif font-bold text-ink">
-            ${fmt(total_value)}
+            {shareMode ? MASKED_MONEY : `$${fmt(total_value)}`}
           </div>
         </div>
         <div className="px-6 py-4">
@@ -53,7 +55,9 @@ export default function PortfolioHeroCard({ portfolio }) {
             }`}
           >
             {dayChangeNum != null
-              ? `${dayChangeNum >= 0 ? "+" : ""}$${fmt(day_change)}`
+              ? shareMode
+                ? `${dayChangeNum >= 0 ? "+" : "−"}${MASKED_MONEY}`
+                : `${dayChangeNum >= 0 ? "+" : ""}$${fmt(day_change)}`
               : "—"}
           </div>
         </div>
@@ -62,7 +66,7 @@ export default function PortfolioHeroCard({ portfolio }) {
             Cash
           </div>
           <div className="text-2xl font-serif font-bold text-ink">
-            {cash_balance != null ? `$${fmt(cash_balance)}` : "—"}
+            {cash_balance != null ? (shareMode ? MASKED_MONEY : `$${fmt(cash_balance)}`) : "—"}
           </div>
         </div>
       </div>

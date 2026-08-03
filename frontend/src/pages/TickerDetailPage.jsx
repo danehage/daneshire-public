@@ -6,9 +6,11 @@ import TargetsAndJournal from "../components/TargetsAndJournal";
 import EarningsCard from "../components/EarningsCard";
 import ContextBlock from "../components/ContextBlock";
 import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
+import { useShareMode, MASKED_MONEY } from "../hooks/useShareMode";
 
 function TradeCampaignsStrip({ ticker }) {
   const { data: campaigns } = useTradeCampaigns({ ticker });
+  const { shareMode } = useShareMode();
   if (!campaigns || campaigns.length === 0) return null;
   return (
     <div className="border-2 border-ink bg-warm-white p-4">
@@ -24,7 +26,11 @@ function TradeCampaignsStrip({ ticker }) {
           >
             {c.title} · {c.status}
             {c.realized_pnl != null &&
-              ` · ${Number(c.realized_pnl) >= 0 ? "+" : ""}$${Number(c.realized_pnl).toLocaleString()}`}
+              ` · ${Number(c.realized_pnl) >= 0 ? "+" : "−"}${
+                shareMode
+                  ? MASKED_MONEY
+                  : `$${Math.abs(Number(c.realized_pnl)).toLocaleString()}`
+              }`}
           </Link>
         ))}
       </div>

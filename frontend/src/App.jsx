@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Layout from "./components/Layout";
+import { ShareModeProvider } from "./hooks/useShareMode";
 import OwnerRoute from "./components/OwnerRoute";
 import DashboardPage from "./pages/DashboardPage";
 import WatchlistPage from "./pages/WatchlistPage";
@@ -15,6 +16,7 @@ import TradeCampaignPage from "./pages/TradeCampaignPage";
 function App() {
   return (
     <BrowserRouter>
+      <ShareModeProvider>
       <Layout>
         <Routes>
           <Route path="/" element={<OwnerRoute><DashboardPage /></OwnerRoute>} />
@@ -29,6 +31,7 @@ function App() {
           <Route path="/trades/:campaignId" element={<OwnerRoute><TradeCampaignPage /></OwnerRoute>} />
         </Routes>
       </Layout>
+      </ShareModeProvider>
     </BrowserRouter>
   );
 }

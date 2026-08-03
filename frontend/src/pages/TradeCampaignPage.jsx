@@ -2,6 +2,7 @@ import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useTradeCampaign } from "../hooks/useTradeCampaigns";
+import { useShareMode, MASKED_MONEY, maskDollarsInText } from "../hooks/useShareMode";
 
 const STATUS_STYLES = {
   open: "border-success text-success bg-success/10",
@@ -21,6 +22,7 @@ function Fact({ label, children }) {
 export default function TradeCampaignPage() {
   const { campaignId } = useParams();
   const { data: campaign, isLoading, error } = useTradeCampaign(campaignId);
+  const { shareMode } = useShareMode();
 
   if (isLoading) {
     return <p className="text-sm text-mid-brown p-6">Loading campaign…</p>;
@@ -65,7 +67,9 @@ export default function TradeCampaignPage() {
             {pnl !== null ? (
               <span className={pnl >= 0 ? "text-gain" : "text-loss"}>
                 {pnl >= 0 ? "+" : ""}
-                {pnl.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                {shareMode
+                  ? MASKED_MONEY
+                  : pnl.toLocaleString("en-US", { style: "currency", currency: "USD" })}
               </span>
             ) : null}
           </Fact>
@@ -92,7 +96,9 @@ export default function TradeCampaignPage() {
       </div>
 
       <div className="text-sm text-ink font-serif prose prose-sm max-w-none prose-headings:text-dark-brown prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-table:text-xs">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{campaign.body}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {shareMode ? maskDollarsInText(campaign.body) : campaign.body}
+        </ReactMarkdown>
       </div>
 
       <p className="text-xs text-mid-brown font-mono">

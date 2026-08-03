@@ -7,6 +7,7 @@ import {
   ResponsiveContainer,
   Dot,
 } from "recharts";
+import { useShareMode, MASKED_MONEY } from "../../hooks/useShareMode";
 
 function formatTimestamp(ts) {
   const d = new Date(ts);
@@ -25,15 +26,16 @@ function CustomDot({ cx, cy, payload }) {
   return <circle cx={cx} cy={cy} r={4} fill="#8b4513" />;
 }
 
-function CustomTooltip({ active, payload }) {
+function CustomTooltip({ active, payload, shareMode }) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
+  const value = (v) => (shareMode ? MASKED_MONEY : formatValue(v));
   return (
     <div className="border-2 border-ink bg-warm-white px-3 py-2 text-xs font-mono shadow-hard-sm">
-      <div className="font-bold text-ink">{formatValue(point.total_value)}</div>
+      <div className="font-bold text-ink">{value(point.total_value)}</div>
       <div className="text-mid-brown">{formatTimestamp(point.timestamp)}</div>
       {point.cash_balance != null && (
-        <div className="text-light-brown">cash: {formatValue(point.cash_balance)}</div>
+        <div className="text-light-brown">cash: {value(point.cash_balance)}</div>
       )}
       <div className="text-light-brown uppercase tracking-wide mt-0.5">{point.source}</div>
     </div>
@@ -41,6 +43,7 @@ function CustomTooltip({ active, payload }) {
 }
 
 export default function ValueHistoryChart({ points }) {
+  const { shareMode } = useShareMode();
   if (!points || points.length === 0) {
     return (
       <div className="p-8 text-center text-mid-brown font-mono text-sm">
@@ -75,14 +78,16 @@ export default function ValueHistoryChart({ points }) {
         <YAxis
           domain={[yMin, yMax]}
           tickFormatter={(v) =>
-            "$" + (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(0))
+            shareMode
+              ? MASKED_MONEY
+              : "$" + (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(0))
           }
           tick={{ fontSize: 10, fontFamily: "monospace", fill: "#7c6658" }}
           tickLine={false}
           axisLine={false}
           width={56}
         />
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={<CustomTooltip shareMode={shareMode} />} />
         <Line
           type="monotone"
           dataKey="total_value_num"

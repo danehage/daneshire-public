@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useRole } from "../hooks/useMe";
+import { useShareMode } from "../hooks/useShareMode";
 
 const navItems = [
   { path: "/", label: "Dashboard", ownerOnly: true },
@@ -42,6 +43,29 @@ function TickerSearch() {
         Go
       </button>
     </form>
+  );
+}
+
+function ShareModeToggle() {
+  const { shareMode, toggle } = useShareMode();
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      title="Masks your balances, P/L dollars, and share counts. Market data stays visible."
+      className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium uppercase tracking-wide border-2 transition-colors ${
+        shareMode
+          ? "bg-ink text-warm-white border-ink"
+          : "bg-warm-white text-mid-brown border-light-brown hover:border-ink hover:text-ink"
+      }`}
+    >
+      <span
+        className={`inline-block w-2 h-2 rounded-full ${
+          shareMode ? "bg-warning" : "bg-light-brown"
+        }`}
+      />
+      Share mode {shareMode ? "on" : "off"}
+    </button>
   );
 }
 
@@ -88,6 +112,11 @@ export default function Layout({ children }) {
         </div>
       </nav>
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">{children}</main>
+      {role === "owner" && (
+        <footer className="max-w-6xl mx-auto px-4 sm:px-6 pb-6 flex justify-end">
+          <ShareModeToggle />
+        </footer>
+      )}
     </div>
   );
 }

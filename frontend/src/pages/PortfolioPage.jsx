@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAccounts, usePortfolio, useCommitSnapshot, useCommitTrade, useTrades, useValueHistory } from "../hooks/usePortfolio";
 import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
+import { useShareMode, MASKED_MONEY, MASKED_QTY } from "../hooks/useShareMode";
 import PortfolioHeroCard from "../components/portfolio/PortfolioHeroCard";
 import ValueHistoryChart from "../components/portfolio/ValueHistoryChart";
 import UploadReviewModal from "../components/portfolio/UploadReviewModal";
@@ -66,6 +67,7 @@ function GradeBadge({ grade, stop, hvNow, atrPct }) {
 }
 
 function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} }) {
+  const { shareMode } = useShareMode();
   if (positions.length === 0) {
     return (
       <div className="p-8 text-center text-mid-brown font-mono text-sm">
@@ -129,14 +131,18 @@ function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} 
               {showAccount && (
                 <td className="py-2 px-3 text-mid-brown">{pos.account_name ?? "—"}</td>
               )}
-              <td className="py-2 px-3 text-right">{Number(pos.qty).toLocaleString()}</td>
+              <td className="py-2 px-3 text-right">
+                {shareMode ? MASKED_QTY : Number(pos.qty).toLocaleString()}
+              </td>
               <td className="py-2 px-3 text-right">${Number(pos.avg_cost).toFixed(2)}</td>
               <td className="py-2 px-3 text-right">
                 {pos.market_value != null
-                  ? `$${Number(pos.market_value).toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}`
+                  ? shareMode
+                    ? MASKED_MONEY
+                    : `$${Number(pos.market_value).toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}`
                   : "—"}
               </td>
               <td
@@ -145,7 +151,9 @@ function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} 
                 }`}
               >
                 {dayChgNum != null
-                  ? `${dayChgNum >= 0 ? "+" : ""}$${Math.abs(dayChgNum).toFixed(2)}`
+                  ? shareMode
+                    ? `${dayChgNum >= 0 ? "+" : "−"}${MASKED_MONEY}`
+                    : `${dayChgNum >= 0 ? "+" : ""}$${Math.abs(dayChgNum).toFixed(2)}`
                   : "—"}
               </td>
               <td className="py-2 px-3">
@@ -463,6 +471,7 @@ function CommitTradeForm({ accountId, onSuccess }) {
 
 function TradeLog({ accountId }) {
   const { data: trades, isLoading } = useTrades(accountId ? { accountId } : undefined);
+  const { shareMode } = useShareMode();
 
   if (!accountId) return null;
 
@@ -517,7 +526,9 @@ function TradeLog({ accountId }) {
                         {t.side}
                       </span>
                     </td>
-                    <td className="py-2 px-3 text-right">{Number(t.qty).toLocaleString()}</td>
+                    <td className="py-2 px-3 text-right">
+                      {shareMode ? MASKED_QTY : Number(t.qty).toLocaleString()}
+                    </td>
                     <td className="py-2 px-3 text-right">${Number(t.price).toFixed(2)}</td>
                     <td
                       className={`py-2 px-3 text-right ${
@@ -525,7 +536,9 @@ function TradeLog({ accountId }) {
                       }`}
                     >
                       {pl != null
-                        ? `${pl >= 0 ? "+" : ""}$${Math.abs(pl).toFixed(2)}`
+                        ? shareMode
+                          ? `${pl >= 0 ? "+" : "−"}${MASKED_MONEY}`
+                          : `${pl >= 0 ? "+" : ""}$${Math.abs(pl).toFixed(2)}`
                         : "—"}
                     </td>
                   </tr>

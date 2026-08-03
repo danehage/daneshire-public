@@ -6,6 +6,7 @@ import {
   useCreateStandaloneJournalEntry,
   useDeleteJournalEntry,
 } from "../hooks/useJournal";
+import { useShareMode, maskDollarsInText } from "../hooks/useShareMode";
 
 const ENTRY_TYPES = [
   { value: "thesis", label: "Thesis" },
@@ -149,6 +150,7 @@ export default function JournalPage() {
 
   // For delete, we pass null since these may be standalone entries
   const deleteEntry = useDeleteJournalEntry(null);
+  const { shareMode } = useShareMode();
 
   return (
     <div>
@@ -245,7 +247,9 @@ export default function JournalPage() {
                 )}
               </div>
               <div className="text-sm text-ink font-serif prose prose-sm max-w-none prose-headings:text-dark-brown prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0">
-                <ReactMarkdown>{entry.content}</ReactMarkdown>
+                <ReactMarkdown>
+                  {shareMode ? maskDollarsInText(entry.content) : entry.content}
+                </ReactMarkdown>
               </div>
             </div>
           ))}

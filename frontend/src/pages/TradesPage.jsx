@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
+import { useShareMode, MASKED_MONEY } from "../hooks/useShareMode";
 
 function money(value) {
   if (value === null || value === undefined) return "—";
@@ -11,6 +12,7 @@ function money(value) {
 }
 
 function PnlCell({ value }) {
+  const { shareMode } = useShareMode();
   if (value === null || value === undefined) {
     return <span className="text-mid-brown">—</span>;
   }
@@ -18,7 +20,7 @@ function PnlCell({ value }) {
   return (
     <span className={`font-mono ${n >= 0 ? "text-gain" : "text-loss"}`}>
       {n >= 0 ? "+" : ""}
-      {money(n)}
+      {shareMode ? MASKED_MONEY : money(n)}
     </span>
   );
 }

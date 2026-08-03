@@ -3,6 +3,7 @@ import {
   useUpdateEarningsTrade,
   useDeleteEarningsTrade,
 } from '../hooks/useEarnings';
+import { useShareMode, MASKED_MONEY, MASKED_QTY } from '../hooks/useShareMode';
 
 const STATUS_BADGE = {
   open: 'bg-blue-100 text-blue-800',
@@ -22,6 +23,7 @@ export default function EarningsTradesList() {
   const { data: trades = [], isLoading, isError, error } = useEarningsTrades();
   const update = useUpdateEarningsTrade();
   const del = useDeleteEarningsTrade();
+  const { shareMode } = useShareMode();
 
   async function handleMarkClosed(trade) {
     const debit = window.prompt(
@@ -110,8 +112,12 @@ export default function EarningsTradesList() {
               </td>
               <td className="px-3 py-2 text-right font-mono">{fmtMoney(trade.entry_credit)}</td>
               <td className="px-3 py-2 text-right font-mono">{fmtMoney(trade.exit_debit)}</td>
-              <td className="px-3 py-2 text-right font-mono">{trade.contracts}</td>
-              <td className="px-3 py-2 text-right font-mono">{fmtMoney(trade.pnl_net)}</td>
+              <td className="px-3 py-2 text-right font-mono">
+                {shareMode ? MASKED_QTY : trade.contracts}
+              </td>
+              <td className="px-3 py-2 text-right font-mono">
+                {shareMode && trade.pnl_net != null ? MASKED_MONEY : fmtMoney(trade.pnl_net)}
+              </td>
               <td className="px-3 py-2 text-mid-brown">{trade.entry_date}</td>
               <td className="px-3 py-2 text-right space-x-2">
                 {trade.status === 'open' && (
