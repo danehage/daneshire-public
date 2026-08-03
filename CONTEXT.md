@@ -64,7 +64,7 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 ## Journal
 
-**Journal Feed** — the merged list served by `GET /api/journal`: app-authored `journal_entries` rows plus **virtual entries** projected at read time from synced Trade Campaign bodies (`## Thesis` → `thesis`, dated `### ` Timeline sections → `note`, `## Exit / Review` → `review`; other `##` sections ignored). Vault-sourced entries are read-only — synthetic `vault:{campaign_id}:{section}` ids, `source="vault"`, never copied into `journal_entries` (the vault stays authoritative, per Trade Campaign). Archived campaigns don't feed it, and future-dated Timeline sections (planned exits) are held back until their date arrives — the feed is strictly reverse-chronological as of today. Parser: `backend/app/services/campaign_journal.py`.
+**Journal Feed** — the merged list served by `GET /api/journal`: app-authored `journal_entries` rows plus **virtual entries** projected at read time from synced Trade Campaign bodies (`## Thesis` → `thesis`, dated `### ` Timeline sections → `note`, `## Exit / Review` → `review`; other `##` sections ignored). Vault-sourced entries are read-only — synthetic `vault:{campaign_id}:{section}` ids, `source="vault"`, never copied into `journal_entries` (the vault stays authoritative, per Trade Campaign). Archived campaigns don't feed it. **Future-dated Timeline sections (planned exits) intentionally sort to the top** — Dane wants upcoming plans visible above the history (decided 2026-08-03; a hold-back-until-dated variant was shipped and reverted same day — don't reintroduce it). Parser: `backend/app/services/campaign_journal.py`.
 
 ## Scanner
 

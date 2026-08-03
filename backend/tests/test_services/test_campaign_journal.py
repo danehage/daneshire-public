@@ -35,7 +35,7 @@ def test_full_body_projection():
         "## Exit / Review\n\nCalled away at target.\n"
     )
     campaign = _campaign(body, closed_on=date(2026, 9, 18))
-    entries = parse_campaign_entries(campaign, today=date(2026, 12, 31))
+    entries = parse_campaign_entries(campaign)
 
     assert [e.entry_type for e in entries] == ["thesis", "note", "note", "review"]
     assert all(e.source == "vault" for e in entries)
@@ -87,21 +87,6 @@ def test_no_opened_on_falls_back_to_synced_at():
     body = "## Thesis\n\nSome thesis.\n"
     entries = parse_campaign_entries(_campaign(body, opened_on=None))
     assert entries[0].created_at.date() == date(2026, 8, 1)
-
-
-def test_future_dated_entries_held_back_until_their_date():
-    body = (
-        "## Timeline\n\n"
-        "### 2026-06-01 — Entry\n- filled\n\n"
-        "### 2026-09-18 — Target Exit (Projected)\n- plan\n"
-    )
-    entries = parse_campaign_entries(_campaign(body), today=date(2026, 8, 3))
-    assert [e.title for e in entries] == ["Entry"]
-
-    # The plan surfaces once its date arrives — with the same stable id.
-    entries = parse_campaign_entries(_campaign(body), today=date(2026, 9, 18))
-    assert [e.title for e in entries] == ["Entry", "Target Exit (Projected)"]
-    assert entries[1].id.endswith(":timeline:1")
 
 
 def test_body_without_journal_sections_yields_nothing():

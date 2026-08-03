@@ -43,20 +43,12 @@ def _to_datetime(d: date) -> datetime:
     return datetime.combine(d, time.min, tzinfo=timezone.utc)
 
 
-def parse_campaign_entries(
-    campaign: TradeCampaign, today: Optional[date] = None
-) -> list[JournalFeedEntry]:
+def parse_campaign_entries(campaign: TradeCampaign) -> list[JournalFeedEntry]:
     """Project one campaign body into virtual journal-feed entries.
 
     Pure and defensive: bodies are hand-written, so anything that doesn't
     match the expected shape is skipped rather than raised.
-
-    Future-dated Timeline sections (planned exits like "2026-09-18 — Call
-    Expiry") are held back until their date arrives — otherwise they'd pin
-    the top of the reverse-chronological feed for months.
     """
-    if today is None:
-        today = datetime.now(timezone.utc).date()
     section: Optional[str] = None
     thesis_lines: list[str] = []
     review_lines: list[str] = []
@@ -95,8 +87,6 @@ def parse_campaign_entries(
     entries: list[JournalFeedEntry] = []
 
     def _add(suffix: str, entry_type: str, title: Optional[str], content: str, on: date):
-        if on > today:
-            return
         entries.append(
             JournalFeedEntry(
                 id=f"vault:{campaign.id}:{suffix}",
