@@ -66,6 +66,8 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 **Journal Feed** — the merged list served by `GET /api/journal`: app-authored `journal_entries` rows plus **virtual entries** projected at read time from synced Trade Campaign bodies (`## Thesis` → `thesis`, dated `### ` Timeline sections → `note`, `## Exit / Review` → `review`; other `##` sections ignored). Vault-sourced entries are read-only — synthetic `vault:{campaign_id}:{section}` ids, `source="vault"`, never copied into `journal_entries` (the vault stays authoritative, per Trade Campaign). Archived campaigns don't feed it. **Future-dated Timeline sections (planned exits) intentionally sort to the top** — Dane wants upcoming plans visible above the history (decided 2026-08-03; a hold-back-until-dated variant was shipped and reverted same day — don't reintroduce it). Parser: `backend/app/services/campaign_journal.py`.
 
+**Share Mode** — frontend-only toggle (Layout footer, persisted in localStorage) that masks Dane's own money for showing the app to someone: balances/market values/P/L dollars → `$XX`, share/contract quantities → `yyy`, and all `$` amounts inside free-text journal markdown. Market data stays visible: per-share prices (avg cost, entry price, fills), percentages, indicators, scanner/earnings output. Nothing server-side changes — masking is render-time only (`frontend/src/hooks/useShareMode.jsx`). Known gap: quantities written in prose ("Bought 100 ACME") are not masked.
+
 ## Scanner
 
 **HV Rank** — historical-volatility-rank proxy. Not implied volatility. UI labels must say "HV Rank", never "IV Rank".
