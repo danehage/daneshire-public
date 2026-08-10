@@ -55,7 +55,7 @@ export default function PortfolioSummaryCard({ portfolio }) {
       <h3 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
         Portfolio
       </h3>
-      <p className="text-3xl sm:text-4xl font-serif font-bold text-ink mb-1">
+      <p className="text-2xl font-serif font-bold text-ink mb-1">
         {shareMode ? MASKED_MONEY : `$${fmt(total_value)}`}
       </p>
       {dayChangeNum != null && (
