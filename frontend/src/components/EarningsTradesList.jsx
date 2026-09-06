@@ -19,6 +19,18 @@ function fmtMoney(value) {
   return num.toFixed(2);
 }
 
+function breakevenMove(trade) {
+  if (
+    trade.status !== 'open' ||
+    trade.entry_credit == null ||
+    trade.short_call_strike == null ||
+    trade.short_put_strike == null
+  ) return null;
+  const shortStrike = Number(trade.short_call_strike);
+  if (shortStrike <= 0) return null;
+  return Number(trade.entry_credit) / shortStrike;
+}
+
 export default function EarningsTradesList() {
   const { data: trades = [], isLoading, isError, error } = useEarningsTrades();
   const update = useUpdateEarningsTrade();
@@ -84,6 +96,7 @@ export default function EarningsTradesList() {
             <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-mid-brown">Debit</th>
             <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-mid-brown">Ct</th>
             <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-mid-brown">PnL net</th>
+            <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-mid-brown">BEven %</th>
             <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-mid-brown">Entry</th>
             <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-mid-brown">Actions</th>
           </tr>
@@ -117,6 +130,12 @@ export default function EarningsTradesList() {
               </td>
               <td className="px-3 py-2 text-right font-mono">
                 {shareMode && trade.pnl_net != null ? MASKED_MONEY : fmtMoney(trade.pnl_net)}
+              </td>
+              <td className="px-3 py-2 text-right font-mono text-mid-brown">
+                {(() => {
+                  const be = breakevenMove(trade);
+                  return be != null ? `${(be * 100).toFixed(1)}%` : '—';
+                })()}
               </td>
               <td className="px-3 py-2 text-mid-brown">{trade.entry_date}</td>
               <td className="px-3 py-2 text-right space-x-2">

@@ -5,6 +5,10 @@ import { useRole } from '../hooks/useMe';
 import EarningsTradeForm from '../components/EarningsTradeForm';
 import EarningsTradesList from '../components/EarningsTradesList';
 
+// Prime candidate thresholds (PRD §15, decision 2).
+const PRIME_IV_RANK_MIN = 70;
+const PRIME_EDGE_MIN = 1.3;
+
 const REPORT_TIME_LABEL = {
   bmo: 'BMO',
   amc: 'AMC',
@@ -21,6 +25,12 @@ function formatDate(dateStr) {
   if (!dateStr) return '—';
   const [year, month, day] = dateStr.split('-');
   return `${month}/${day}/${year}`;
+}
+
+function shortFormatDate(dateStr) {
+  if (!dateStr) return '—';
+  const [, month, day] = dateStr.split('-');
+  return `${month}/${day}`;
 }
 
 // Local-time YYYY-MM-DD (toISOString would shift across the UTC boundary).
@@ -46,6 +56,15 @@ function nextTradingDays(count) {
 
 function shortDate(d) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function isPrime(event) {
+  return (
+    event.latest_iv_rank != null &&
+    event.edge_ratio != null &&
+    Number(event.latest_iv_rank) >= PRIME_IV_RANK_MIN &&
+    Number(event.edge_ratio) >= PRIME_EDGE_MIN
+  );
 }
 
 function SortButton({ label, field, sortField, sortDir, onSort }) {
@@ -79,7 +98,8 @@ function FilterInput({ label, value, onChange, placeholder, type = 'number', min
   );
 }
 
-function EventsTable({ events, sortField, sortDir, onSort }) {
+function EventsTable({ events, totalEvents, showAll, onToggleShowAll, sortField, sortDir, onSort }) {
+  const hasHidden = totalEvents > events.length;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-2 border-ink text-sm">
@@ -107,62 +127,114 @@ function EventsTable({ events, sortField, sortDir, onSort }) {
               <SortButton label="Avg Realized %" field="historical_avg_realized_move_pct" sortField={sortField} sortDir={sortDir} onSort={onSort} />
             </th>
             <th className="px-4 py-3 text-right">
+              <SortButton label="Max Move 8Q" field="max_realized_move_pct" sortField={sortField} sortDir={sortDir} onSort={onSort} />
+            </th>
+            <th className="px-4 py-3 text-right">
               <SortButton label="Edge Ratio" field="edge_ratio" sortField={sortField} sortDir={sortDir} onSort={onSort} />
+            </th>
+            <th className="px-4 py-3 text-left">
+              <SortButton label="Enter" field="suggested_entry_date" sortField={sortField} sortDir={sortDir} onSort={onSort} />
             </th>
           </tr>
         </thead>
         <tbody>
-          {events.map((event) => (
-            <tr
-              key={event.id}
-              className="border-b border-gray-200 hover:bg-warm-white transition-colors"
-            >
-              <td className="px-4 py-3 font-mono font-bold">
-                <Link
-                  to={`/ticker/${event.ticker}`}
-                  className="text-accent hover:underline"
-                >
-                  {event.ticker}
-                </Link>
-              </td>
-              <td className="px-4 py-3 text-ink">{formatDate(event.report_date)}</td>
-              <td className="px-4 py-3">
-                <span
-                  className={`inline-block px-2 py-0.5 text-xs font-semibold rounded ${
-                    REPORT_TIME_CLASS[event.report_time] || REPORT_TIME_CLASS.unknown
-                  }`}
-                >
-                  {REPORT_TIME_LABEL[event.report_time] ?? event.report_time}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-mid-brown">
-                {event.fiscal_period || '—'}
-              </td>
-              <td className="px-4 py-3 text-right font-mono text-ink">
-                {event.latest_iv_rank != null
-                  ? Number(event.latest_iv_rank).toFixed(1)
-                  : '—'}
-              </td>
-              <td className="px-4 py-3 text-right font-mono text-ink">
-                {event.latest_expected_move_pct != null
-                  ? `${(Number(event.latest_expected_move_pct) * 100).toFixed(2)}%`
-                  : '—'}
-              </td>
-              <td className="px-4 py-3 text-right font-mono text-mid-brown">
-                {event.historical_avg_realized_move_pct != null
-                  ? `${(Number(event.historical_avg_realized_move_pct) * 100).toFixed(2)}%`
-                  : '—'}
-              </td>
-              <td className="px-4 py-3 text-right font-mono font-semibold text-ink">
-                {event.edge_ratio != null
-                  ? Number(event.edge_ratio).toFixed(2)
-                  : '—'}
-              </td>
-            </tr>
-          ))}
+          {events.map((event) => {
+            const prime = isPrime(event);
+            const unknownTime = event.report_time === 'unknown';
+            return (
+              <tr
+                key={event.id}
+                className={[
+                  'border-b border-gray-200 dark:border-gray-700 transition-colors',
+                  prime
+                    ? 'bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30'
+                    : 'hover:bg-warm-white',
+                  unknownTime ? 'opacity-60' : '',
+                ].join(' ')}
+              >
+                <td className="px-4 py-3 font-mono font-bold">
+                  <span className="inline-flex items-center gap-1">
+                    {prime && <span title="Prime candidate">⭐</span>}
+                    <Link
+                      to={`/ticker/${event.ticker}`}
+                      className="text-accent hover:underline"
+                    >
+                      {event.ticker}
+                    </Link>
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-ink">{formatDate(event.report_date)}</td>
+                <td className="px-4 py-3">
+                  <span
+                    className={`inline-block px-2 py-0.5 text-xs font-semibold rounded ${
+                      REPORT_TIME_CLASS[event.report_time] || REPORT_TIME_CLASS.unknown
+                    }`}
+                  >
+                    {REPORT_TIME_LABEL[event.report_time] ?? event.report_time}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-mid-brown">
+                  {event.fiscal_period || '—'}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-ink">
+                  {event.latest_iv_rank != null
+                    ? Number(event.latest_iv_rank).toFixed(1)
+                    : '—'}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-ink">
+                  {event.latest_expected_move_pct != null
+                    ? `${(Number(event.latest_expected_move_pct) * 100).toFixed(2)}%`
+                    : '—'}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-mid-brown">
+                  {event.historical_avg_realized_move_pct != null
+                    ? `${(Number(event.historical_avg_realized_move_pct) * 100).toFixed(2)}%`
+                    : '—'}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-mid-brown">
+                  {event.max_realized_move_pct != null
+                    ? `${(Number(event.max_realized_move_pct) * 100).toFixed(2)}%`
+                    : '—'}
+                </td>
+                <td className="px-4 py-3 text-right font-mono font-semibold text-ink">
+                  {event.edge_ratio != null
+                    ? Number(event.edge_ratio).toFixed(2)
+                    : '—'}
+                </td>
+                <td className="px-4 py-3 text-ink">
+                  {unknownTime ? (
+                    <span className="inline-block px-2 py-0.5 text-xs font-semibold rounded bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                      entry day unknown
+                    </span>
+                  ) : (
+                    event.suggested_entry_date
+                      ? shortFormatDate(event.suggested_entry_date)
+                      : '—'
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
-      <p className="text-xs text-mid-brown mt-2">{events.length} events</p>
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-xs text-mid-brown">
+          {events.length} of {totalEvents} events
+          {hasHidden && !showAll && (
+            <span className="ml-1 text-gray-400">
+              ({totalEvents - events.length} without IV data hidden)
+            </span>
+          )}
+        </p>
+        {totalEvents > events.length || showAll ? (
+          <button
+            onClick={onToggleShowAll}
+            className="text-xs text-mid-brown underline hover:text-ink"
+          >
+            {showAll ? 'Hide events without IV data' : `Show all ${totalEvents} events`}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -187,15 +259,20 @@ export default function EarningsPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
 
+  // Default filters: IV rank ≥ 50, edge ratio ≥ 1.2 (PRD §15, decision 2).
+  // URL params override; Clear empties back to no filter.
   const [minIvRankInput, setMinIvRankInput] = useState(
-    searchParams.get('min_iv_rank') || ''
+    searchParams.get('min_iv_rank') ?? '50'
   );
   const [minEdgeRatioInput, setMinEdgeRatioInput] = useState(
-    searchParams.get('min_edge_ratio') || ''
+    searchParams.get('min_edge_ratio') ?? '1.2'
   );
   const [minVolumeInput, setMinVolumeInput] = useState(
-    searchParams.get('min_volume') || ''
+    searchParams.get('min_volume') ?? ''
   );
+
+  // Toggle: show rows without IV data (hidden by default).
+  const [showAll, setShowAll] = useState(false);
 
   // Debounced filter values drive the query.
   const minIvRank = useDebounced(minIvRankInput);
@@ -248,7 +325,8 @@ export default function EarningsPage() {
       field === 'latest_iv_rank' ||
       field === 'latest_expected_move_pct' ||
       field === 'edge_ratio' ||
-      field === 'historical_avg_realized_move_pct'
+      field === 'historical_avg_realized_move_pct' ||
+      field === 'max_realized_move_pct'
     ) {
       valA = Number(valA);
       valB = Number(valB);
@@ -270,9 +348,15 @@ export default function EarningsPage() {
     return compare(a, b, 'report_date', 'asc');
   });
 
+  // Hide rows without IV data by default; toggle reveals them.
+  const withIv = sorted.filter((e) => e.latest_iv_rank != null);
+  const displayEvents = showAll ? sorted : withIv;
+
   // ISO dates compare correctly as strings.
-  const thisWeek = sorted.filter((e) => e.report_date <= week1End);
-  const onDeck = sorted.filter((e) => e.report_date > week1End);
+  const thisWeek = displayEvents.filter((e) => e.report_date <= week1End);
+  const onDeck = displayEvents.filter((e) => e.report_date > week1End);
+  const thisWeekTotal = sorted.filter((e) => e.report_date <= week1End).length;
+  const onDeckTotal = sorted.filter((e) => e.report_date > week1End).length;
 
   const hasFilters = Boolean(minIvRank || minEdgeRatio || minVolume);
 
@@ -344,6 +428,9 @@ export default function EarningsPage() {
           {thisWeek.length > 0 ? (
             <EventsTable
               events={thisWeek}
+              totalEvents={thisWeekTotal}
+              showAll={showAll}
+              onToggleShowAll={() => setShowAll((v) => !v)}
               sortField={sortField}
               sortDir={sortDir}
               onSort={handleSort}
@@ -371,6 +458,9 @@ export default function EarningsPage() {
             {onDeck.length > 0 ? (
               <EventsTable
                 events={onDeck}
+                totalEvents={onDeckTotal}
+                showAll={showAll}
+                onToggleShowAll={() => setShowAll((v) => !v)}
                 sortField={sortField}
                 sortDir={sortDir}
                 onSort={handleSort}

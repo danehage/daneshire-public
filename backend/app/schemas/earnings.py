@@ -25,7 +25,12 @@ class EarningsEventResponse(BaseModel):
     # Computed from past earnings_events.realized_move_pct (after backfill).
     # Null when fewer than 4 past quarters have recorded realized moves.
     historical_avg_realized_move_pct: Optional[Decimal] = None
+    max_realized_move_pct: Optional[Decimal] = None
     edge_ratio: Optional[Decimal] = None
+    quarters_used: int = 0
+
+    # Derived entry timing: report_date for amc, prior weekday for bmo, null for unknown.
+    suggested_entry_date: Optional[date] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -59,6 +59,23 @@ _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 _MIN_QUARTERS_FOR_EDGE = 4  # ADR-0003: fewer than 4 → no edge ratio
 
 
+def _prior_trading_day(d: date) -> date:
+    """Return the most recent weekday strictly before d (weekend-aware)."""
+    candidate = d - timedelta(days=1)
+    while candidate.weekday() >= 5:  # 5=Sat, 6=Sun
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _suggested_entry_date(report_date: date, report_time: str) -> Optional[date]:
+    """T-1 entry date for an ironfly: same day for amc, prior weekday for bmo, null for unknown."""
+    if report_time == "amc":
+        return report_date
+    if report_time == "bmo":
+        return _prior_trading_day(report_date)
+    return None
+
+
 def _build_subqueries():
     """Return (latest_iv, avg_realized) SQLAlchemy subqueries."""
     latest_iv = (
@@ -72,13 +89,14 @@ def _build_subqueries():
         .subquery()
     )
 
-    # Average of realized_move_pct from PAST events (report_date < today)
+    # Average and max of realized_move_pct from PAST events (report_date < today)
     # per ticker; counts only rows where the column is not null.
     today = date.today()
     avg_realized = (
         select(
             EarningsEvent.ticker.label("rm_ticker"),
             func.avg(EarningsEvent.realized_move_pct).label("avg_move"),
+            func.max(EarningsEvent.realized_move_pct).label("max_move"),
             func.count(EarningsEvent.realized_move_pct).label("quarters_used"),
         )
         .where(EarningsEvent.report_date < today)
@@ -95,12 +113,13 @@ def _make_response(
     iv_rank,
     expected_move_pct,
     avg_move,
+    max_move,
     quarters_used,
 ) -> EarningsEventResponse:
     edge_ratio: Optional[Decimal] = None
+    q = int(quarters_used) if quarters_used is not None else 0
     if (
-        quarters_used is not None
-        and int(quarters_used) >= _MIN_QUARTERS_FOR_EDGE
+        q >= _MIN_QUARTERS_FOR_EDGE
         and avg_move is not None
         and float(avg_move) > 0
         and expected_move_pct is not None
@@ -119,7 +138,10 @@ def _make_response(
         latest_iv_rank=iv_rank,
         latest_expected_move_pct=expected_move_pct,
         historical_avg_realized_move_pct=avg_move,
+        max_realized_move_pct=max_move,
         edge_ratio=edge_ratio,
+        quarters_used=q,
+        suggested_entry_date=_suggested_entry_date(event.report_date, event.report_time),
     )
 
 
@@ -146,6 +168,7 @@ async def list_earnings_calendar(
             latest_iv.c.iv_rank,
             latest_iv.c.expected_move_pct,
             avg_realized.c.avg_move,
+            avg_realized.c.max_move,
             avg_realized.c.quarters_used,
         )
         .outerjoin(latest_iv, latest_iv.c.iv_ticker == EarningsEvent.ticker)
@@ -157,8 +180,8 @@ async def list_earnings_calendar(
 
     result = await db.execute(query)
     return [
-        _make_response(event, iv_rank, expected_move_pct, avg_move, quarters_used)
-        for event, iv_rank, expected_move_pct, avg_move, quarters_used in result.all()
+        _make_response(event, iv_rank, expected_move_pct, avg_move, max_move, quarters_used)
+        for event, iv_rank, expected_move_pct, avg_move, max_move, quarters_used in result.all()
     ]
 
 
@@ -190,6 +213,7 @@ async def screen_earnings(
             latest_iv.c.iv_rank,
             latest_iv.c.expected_move_pct,
             avg_realized.c.avg_move,
+            avg_realized.c.max_move,
             avg_realized.c.quarters_used,
         )
         .outerjoin(latest_iv, latest_iv.c.iv_ticker == EarningsEvent.ticker)
@@ -205,8 +229,8 @@ async def screen_earnings(
     rows = result.all()
 
     candidates: list[EarningsEventResponse] = []
-    for event, iv_rank, expected_move_pct, avg_move, quarters_used in rows:
-        resp = _make_response(event, iv_rank, expected_move_pct, avg_move, quarters_used)
+    for event, iv_rank, expected_move_pct, avg_move, max_move, quarters_used in rows:
+        resp = _make_response(event, iv_rank, expected_move_pct, avg_move, max_move, quarters_used)
 
         if min_edge_ratio is not None:
             if resp.edge_ratio is None or float(resp.edge_ratio) < min_edge_ratio:
@@ -522,8 +546,9 @@ async def get_ticker_earnings(
         for row in history_rows
     ]
 
-    # Historical avg + edge ratio — same null rules as ADR-0003 / #19.
+    # Historical avg + max + edge ratio — same null rules as ADR-0003 / #19.
     historical_avg: Optional[Decimal] = None
+    historical_max: Optional[Decimal] = None
     edge_ratio: Optional[Decimal] = None
     quarters_used = len(history_rows)
     if quarters_used >= _MIN_QUARTERS_FOR_EDGE:
@@ -537,6 +562,8 @@ async def get_ticker_earnings(
             edge_ratio = Decimal(
                 str(float(snapshot.expected_move_pct) / float(historical_avg))
             )
+    if history_rows:
+        historical_max = Decimal(str(max(float(r.realized_move_pct) for r in history_rows)))
 
     # Build the embedded EarningsEventResponse with the same joined fields
     # used by /calendar (latest IV + historical avg + edge ratio).
@@ -547,6 +574,7 @@ async def get_ticker_earnings(
             iv_rank=(snapshot.iv_rank if snapshot else None),
             expected_move_pct=(snapshot.expected_move_pct if snapshot else None),
             avg_move=historical_avg,
+            max_move=historical_max,
             quarters_used=quarters_used,
         )
 
