@@ -10,11 +10,31 @@ from datetime import datetime, date
 from typing import Optional
 
 from urllib.parse import quote as urlquote
+from dataclasses import dataclass
+
 import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RequestFailure:
+    """Why the last request failed, for actionable logging."""
+
+    status: Optional[int]
+    body: str = ""
+
+    def describe(self) -> str:
+        if self.status is None:
+            return f"network error: {self.body}"
+        detail = f" {self.body}" if self.body else ""
+        return f"HTTP {self.status}{detail}"
+
+    def is_permanent(self) -> bool:
+        """A client error that will not resolve by retrying this run."""
+        return self.status is not None and 400 <= self.status < 500 and self.status != 429
 
 
 class FMPClient:
@@ -37,6 +57,9 @@ class FMPClient:
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
 
+        # Why the most recent request failed, for actionable logging (#72).
+        self.last_failure: Optional[RequestFailure] = None
+
         # Throttling: track last request time
         self._last_request_time = 0.0
         self._request_lock = asyncio.Lock()
@@ -54,8 +77,16 @@ class FMPClient:
     async def _request_with_retry(
         self, url: str, client: httpx.AsyncClient, retries: int = None
     ) -> Optional[httpx.Response]:
-        """Make a request with throttling and retry on rate limit."""
+        """Make a request with throttling and retry on rate limit.
+
+        On a non-retryable failure the status is recorded in
+        ``last_failure`` so callers can report *why* a request failed. It
+        used to be logged at debug only, which is below the production log
+        level — issue #72 could not be diagnosed from prod logs because the
+        status code never appeared anywhere.
+        """
         retries = retries if retries is not None else self.MAX_RETRIES
+        self.last_failure = None
 
         for attempt in range(retries + 1):
             await self._throttle()
@@ -72,13 +103,23 @@ class FMPClient:
                         await asyncio.sleep(delay)
                     else:
                         logger.error(f"Rate limited after {retries} retries")
+                        self.last_failure = RequestFailure(429, "rate limited")
                         return None
                 else:
-                    logger.debug(f"Request failed with status {response.status_code}")
+                    body = ""
+                    try:
+                        body = response.text[:200]
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    self.last_failure = RequestFailure(response.status_code, body)
+                    logger.debug(
+                        f"Request failed with status {response.status_code}: {body}"
+                    )
                     return None
 
             except httpx.RequestError as e:
                 logger.debug(f"Request error: {e}")
+                self.last_failure = RequestFailure(None, str(e)[:200])
                 if attempt < retries:
                     await asyncio.sleep(self.RETRY_DELAY)
                 else:
@@ -151,6 +192,9 @@ class FMPClient:
         """
         all_quotes: dict[str, dict] = {}
         total = len(tickers)
+        # Cleared when the bulk endpoint reports a permanent failure, so the
+        # remaining chunks skip it instead of retrying a known-bad call.
+        batch_supported = True
 
         logger.info(
             f"Fetching quotes for {total} stocks "
@@ -165,11 +209,19 @@ class FMPClient:
                     f"{self.BASE_URL}/stable/batch-quote"
                     f"?symbols={urlquote(symbols, safe=',')}&apikey={self.api_key}"
                 )
-                response = await self._request_with_retry(url, client)
+                response = None
+                if batch_supported:
+                    response = await self._request_with_retry(url, client)
 
                 items = []
                 if response is not None:
-                    data = response.json()
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        # 200 with a non-JSON body: treat as a failed chunk
+                        # rather than raising out of the whole scan.
+                        data = None
+                        self.last_failure = RequestFailure(200, "non-JSON body")
                     if isinstance(data, list):
                         items = data
 
@@ -184,10 +236,25 @@ class FMPClient:
                         if quote:
                             all_quotes[ticker] = quote
                 else:
-                    logger.warning(
-                        f"Batch quote chunk failed ({len(chunk)} symbols); "
-                        "falling back to individual requests"
-                    )
+                    failure = self.last_failure
+                    if batch_supported:
+                        logger.warning(
+                            "Batch quote chunk failed (%d symbols; %s); "
+                            "falling back to individual requests",
+                            len(chunk),
+                            failure.describe() if failure else "no response",
+                        )
+                        # A 4xx that is not rate limiting means the endpoint
+                        # is not going to start working mid-run (wrong plan,
+                        # wrong parameter, bad key). Stop paying a failed
+                        # round trip per chunk and go straight to singles.
+                        if failure is not None and failure.is_permanent():
+                            batch_supported = False
+                            logger.warning(
+                                "Disabling the bulk quote endpoint for this "
+                                "run after %s; using individual requests.",
+                                failure.describe(),
+                            )
                     for ticker in chunk:
                         single_url = (
                             f"{self.BASE_URL}/stable/quote"

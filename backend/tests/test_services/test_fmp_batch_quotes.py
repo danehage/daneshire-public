@@ -169,3 +169,119 @@ async def test_full_quote_coverage_writes_stage1_cache(tmp_path):
     await scanner.run_scan(tickers, use_cache=True, universe="sp500")
 
     assert len(_stage1_cache_files(cache_dir)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Chunk-failure diagnostics (#72)
+#
+# Every bulk chunk was failing in production and falling back to individual
+# requests (~645 throttled calls, ~6.5 min). The HTTP status was logged at
+# debug only — below the production log level — so the cause was invisible.
+# ---------------------------------------------------------------------------
+
+
+class FailingResponse:
+    def __init__(self, status_code, text="", payload=None):
+        self.status_code = status_code
+        self.text = text
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no JSON")
+        return self._payload
+
+
+async def test_chunk_failure_logs_the_http_status(tmp_path, caplog):
+    """The warning must name the status, or #72 stays undiagnosable."""
+    import httpx
+
+    client = make_client(tmp_path)
+
+    async def fake_request(url, http_client, retries=None):
+        if "batch-quote" in url:
+            from app.services.fmp_client import RequestFailure
+            client.last_failure = RequestFailure(402, "Payment Required")
+            return None
+        return FakeResponse([quote_for("AAPL")])
+
+    client._request_with_retry = fake_request
+    with caplog.at_level("WARNING"):
+        await client.get_batch_quotes(["AAPL"])
+
+    assert "402" in caplog.text
+    assert "Payment Required" in caplog.text
+
+
+async def test_permanent_failure_stops_retrying_the_bulk_endpoint(tmp_path):
+    """A 4xx will not fix itself mid-run; don't pay a round trip per chunk."""
+    from app.services.fmp_client import RequestFailure
+
+    client = make_client(tmp_path)
+    client.BATCH_QUOTE_CHUNK = 2
+    batch_attempts = []
+
+    async def fake_request(url, http_client, retries=None):
+        if "batch-quote" in url:
+            batch_attempts.append(url)
+            client.last_failure = RequestFailure(403, "not on your plan")
+            return None
+        symbol = url.split("symbol=")[1].split("&")[0]
+        return FakeResponse([quote_for(symbol)])
+
+    client._request_with_retry = fake_request
+    quotes = await client.get_batch_quotes(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+
+    # Three chunks of two, but the bulk endpoint is tried only once.
+    assert len(batch_attempts) == 1
+    # Nothing is dropped — every symbol still resolves via the fallback.
+    assert set(quotes) == {"AAA", "BBB", "CCC", "DDD", "EEE", "FFF"}
+
+
+async def test_rate_limiting_does_not_disable_the_bulk_endpoint(tmp_path):
+    """429 is transient: later chunks must still try the bulk path."""
+    from app.services.fmp_client import RequestFailure
+
+    client = make_client(tmp_path)
+    client.BATCH_QUOTE_CHUNK = 2
+    batch_attempts = []
+
+    async def fake_request(url, http_client, retries=None):
+        if "batch-quote" in url:
+            batch_attempts.append(url)
+            client.last_failure = RequestFailure(429, "rate limited")
+            return None
+        symbol = url.split("symbol=")[1].split("&")[0]
+        return FakeResponse([quote_for(symbol)])
+
+    client._request_with_retry = fake_request
+    await client.get_batch_quotes(["AAA", "BBB", "CCC", "DDD"])
+
+    assert len(batch_attempts) == 2
+
+
+async def test_non_json_200_is_a_failed_chunk_not_a_crash(tmp_path):
+    """A 200 with an HTML body used to raise out of the whole scan."""
+    client = make_client(tmp_path)
+
+    async def fake_request(url, http_client, retries=None):
+        if "batch-quote" in url:
+            return FailingResponse(200, text="<html>maintenance</html>")
+        symbol = url.split("symbol=")[1].split("&")[0]
+        return FakeResponse([quote_for(symbol)])
+
+    client._request_with_retry = fake_request
+    quotes = await client.get_batch_quotes(["AAPL"])
+    assert quotes["AAPL"]["symbol"] == "AAPL"
+
+
+def test_request_failure_classification():
+    from app.services.fmp_client import RequestFailure
+
+    assert RequestFailure(403, "nope").is_permanent() is True
+    assert RequestFailure(400).is_permanent() is True
+    assert RequestFailure(429, "slow down").is_permanent() is False
+    assert RequestFailure(500).is_permanent() is False
+    assert RequestFailure(None, "timeout").is_permanent() is False
+    assert "network error" in RequestFailure(None, "timeout").describe()
+    assert RequestFailure(402, "Payment Required").describe() == "HTTP 402 Payment Required"
