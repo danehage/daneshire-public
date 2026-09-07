@@ -18,6 +18,7 @@ from app.schemas.scan import (
     ScanResultsResponse,
     UniverseInfo,
 )
+from app.schemas.tickers import normalize_ticker
 from app.services import UNIVERSES, get_universe
 from app.services.market import MarketData, TickerNotFound, get_market
 
@@ -25,13 +26,63 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scan", tags=["scanner"])
 
-# In-memory storage for active scans (replace with Redis/DB for production)
+# In-memory storage for active scans (replace with Redis/DB for production).
+#
+# Every entry holds the full scored result set for its universe (~900 rows),
+# so this dict is bounded on two axes: entries are dropped once they age out
+# of _SCAN_RETENTION_SECONDS, and the newest _MAX_RETAINED_SCANS are kept
+# regardless. Without this the dict grew for the life of the process and
+# repeated scans exhausted the 512Mi Cloud Run instance.
 _active_scans: dict[str, dict] = {}
 
 # Strong references to in-flight background scan tasks. asyncio only holds a
 # weak reference to tasks, so without this they could be garbage-collected
 # mid-scan. Tasks remove themselves on completion.
 _scan_tasks: set[asyncio.Task] = set()
+
+# Retention for finished scans, and the cap on how many are kept at once.
+_SCAN_RETENTION_SECONDS = 3600
+_MAX_RETAINED_SCANS = 10
+
+# A scan holds a CPU-always-allocated worker for minutes and fans out to a
+# paid upstream API. One at a time, per instance.
+_MAX_CONCURRENT_SCANS = 1
+
+
+def _running_scan_count() -> int:
+    return sum(1 for s in _active_scans.values() if s["status"] == "running")
+
+
+def _prune_scans() -> None:
+    """Drop finished scans that have aged out, then enforce the count cap.
+
+    Running scans are never pruned.
+    """
+    now = datetime.utcnow()
+    finished = [
+        (scan_id, state)
+        for scan_id, state in _active_scans.items()
+        if state["status"] != "running"
+    ]
+
+    for scan_id, state in finished:
+        completed_at = state.get("completed_at") or state["started_at"]
+        if (now - completed_at).total_seconds() > _SCAN_RETENTION_SECONDS:
+            _active_scans.pop(scan_id, None)
+
+    # Still too many? Drop the oldest finished scans until we are under cap.
+    surplus = len(_active_scans) - _MAX_RETAINED_SCANS
+    if surplus > 0:
+        oldest_first = sorted(
+            (
+                (state.get("completed_at") or state["started_at"], scan_id)
+                for scan_id, state in _active_scans.items()
+                if state["status"] != "running"
+            ),
+            key=lambda pair: pair[0],
+        )
+        for _, scan_id in oldest_first[:surplus]:
+            _active_scans.pop(scan_id, None)
 
 
 @router.get("/universes", response_model=list[UniverseInfo])
@@ -71,6 +122,17 @@ async def execute_scan(
     tickers = get_universe(request.universe)
     if not tickers:
         raise HTTPException(status_code=400, detail=f"Unknown universe: {request.universe}")
+
+    _prune_scans()
+
+    if _running_scan_count() >= _MAX_CONCURRENT_SCANS:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A scan is already running. Wait for it to finish before "
+                "starting another."
+            ),
+        )
 
     # Delegate to the shared scanner so the FMP throttle is process-wide.
     scanner = market.scanner
@@ -263,7 +325,7 @@ async def analyze_single_ticker(
     Analyze a single ticker with full technical breakdown.
     """
     try:
-        analysis = await market.analysis(symbol.upper())
+        analysis = await market.analysis(normalize_ticker(symbol))
     except TickerNotFound:
         raise HTTPException(status_code=404, detail=f"Could not analyze {symbol}")
 

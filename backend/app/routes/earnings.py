@@ -41,6 +41,8 @@ from app.services.market import MarketData, MarketDataError, get_market
 
 logger = logging.getLogger(__name__)
 
+from app.schemas.tickers import normalize_ticker
+
 router = APIRouter(prefix="/api/earnings", tags=["earnings"])
 
 
@@ -271,7 +273,7 @@ async def get_expected_move(
     Returns null edge_ratio when fewer than 4 past quarters have recorded
     realized moves (ADR-0003 minimum).
     """
-    symbol = ticker.upper()
+    symbol = normalize_ticker(ticker)
     today = date.today()
 
     # Latest IV snapshot for expected_move_pct.
@@ -506,7 +508,7 @@ async def get_ticker_earnings(
     ADR-0003), and the 5 most recent earnings trades. Every subsection
     is independently optional — empty/null when there's no source data.
     """
-    symbol = ticker.upper()
+    symbol = normalize_ticker(ticker)
     today = date.today()
 
     # Next upcoming earnings event (today or later), ascending.

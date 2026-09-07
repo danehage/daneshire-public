@@ -799,12 +799,17 @@ async def run_plateau_checks(
 
 
 @router.get("/health")
-async def internal_health():
-    """Health check endpoint for Cloud Scheduler monitoring (no auth)."""
-    pushover = PushoverClient()
+async def internal_health(
+    _: None = Depends(verify_scheduler_secret),
+):
+    """Health check endpoint for Cloud Scheduler monitoring.
+
+    Requires the scheduler secret like every other internal route. It used
+    to be unauthenticated and reported whether Pushover and the scheduler
+    secret were configured, which told an anonymous caller what to target.
+    Cloud Run's own liveness probe uses the public /api/health instead.
+    """
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "pushover_configured": pushover.is_configured,
-        "scheduler_secret_configured": bool(settings.scheduler_secret),
     }

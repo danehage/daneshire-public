@@ -1,9 +1,10 @@
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +35,71 @@ from app.services.vision_parser import (
     VisionUpstreamError,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+
+# Screenshot uploads are read fully into memory before being handed to the
+# vision parser. Cloud Run runs this at 512Mi with max-instances 1, so an
+# unbounded read is an availability problem, not just a cost one.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+ALLOWED_UPLOAD_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+
+def require_same_origin(request: Request) -> None:
+    """Reject cross-site form posts to the multipart upload routes.
+
+    multipart/form-data is a CORS-"simple" content type, so a browser sends
+    it cross-origin with no preflight — and it will attach the cached Basic
+    Auth credentials. The JSON routes are already protected by the preflight
+    their content type forces; these two were not. Requiring a header that
+    only same-origin script can set restores that guarantee.
+
+    Sec-Fetch-Site is honoured when the browser sends it; the custom header
+    is the fallback for clients that do not.
+    """
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site in ("same-origin", "none"):
+        return
+    if request.headers.get("X-Requested-With") == "danecast-trades":
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Cross-site upload rejected.",
+    )
+
+
+async def read_upload(image: UploadFile) -> bytes:
+    """Read an uploaded screenshot, enforcing type and size limits."""
+    if image.content_type not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"Unsupported image type {image.content_type!r}. "
+                f"Expected one of: {', '.join(sorted(ALLOWED_UPLOAD_TYPES))}."
+            ),
+        )
+
+    # Read in chunks so an oversized body is rejected without being buffered
+    # in full.
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await image.read(64 * 1024):
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Image exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit."
+                ),
+            )
+        chunks.append(chunk)
+
+    if total == 0:
+        raise HTTPException(status_code=422, detail="Empty image upload.")
+
+    return b"".join(chunks)
+
 
 
 @router.get("/accounts", response_model=list[AccountResponse])
@@ -159,6 +224,7 @@ async def parse_snapshot(
     engine: PortfolioEngine = Depends(get_portfolio_engine),
     parser: Optional[VisionParser] = Depends(get_vision_parser),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_same_origin),
 ):
     """Parse a portfolio screenshot and return a diff vs current holdings.
 
@@ -171,7 +237,7 @@ async def parse_snapshot(
             detail="Vision parser is not configured (GEMINI_API_KEY missing).",
         )
 
-    image_bytes = await image.read()
+    image_bytes = await read_upload(image)
     try:
         parsed = await parser.parse_portfolio(image_bytes, account_hint=account_hint)
     except VisionLowConfidence as exc:
@@ -208,12 +274,14 @@ async def commit_snapshot(
         # migrations — the 'owned' watchlist status). Surface a readable 409
         # instead of a blank 500 so the cause is obvious from the UI.
         await db.rollback()
+        # The driver error names tables, columns and constraints; log it
+        # rather than returning it to the caller.
+        logger.warning("Snapshot commit rejected by a DB constraint: %s", exc.orig)
         raise HTTPException(
             status_code=409,
             detail=(
                 "Snapshot rejected by a database constraint. The production "
-                "schema may be behind on migrations (run `alembic upgrade head`). "
-                f"Underlying error: {exc.orig}"
+                "schema may be behind on migrations (run `alembic upgrade head`)."
             ),
         ) from exc
 
@@ -318,6 +386,7 @@ async def parse_trade(
     account_hint: Optional[str] = Query(default=None),
     parser: Optional[VisionParser] = Depends(get_vision_parser),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_same_origin),
 ):
     """Parse a trade-confirmation screenshot into a single fill.
 
@@ -330,7 +399,7 @@ async def parse_trade(
             detail="Vision parser is not configured (GEMINI_API_KEY missing).",
         )
 
-    image_bytes = await image.read()
+    image_bytes = await read_upload(image)
     try:
         parsed = await parser.parse_trade(image_bytes, account_hint=account_hint)
     except VisionLowConfidence as exc:

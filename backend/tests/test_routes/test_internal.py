@@ -111,15 +111,27 @@ def _override_engine(db_session: AsyncSession, market: _FakeMarket, notifier: _R
 
 
 @pytest.mark.asyncio
-async def test_internal_health(client: AsyncClient):
-    """Health check endpoint works without auth."""
-    response = await client.get("/api/internal/health")
+async def test_internal_health_requires_the_scheduler_secret(client: AsyncClient):
+    """It used to answer anonymously; /api/internal/* is not public."""
+    assert (await client.get("/api/internal/health")).status_code == 401
+
+    wrong = await client.get(
+        "/api/internal/health", headers={"X-Scheduler-Secret": "wrong-secret"}
+    )
+    assert wrong.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_internal_health_with_secret(client: AsyncClient):
+    response = await client.get("/api/internal/health", headers=auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
     assert "timestamp" in data
-    assert "pushover_configured" in data
-    assert "scheduler_secret_configured" in data
+    # Configuration state is not disclosed: it told an anonymous caller
+    # whether a scheduler secret and Pushover were live.
+    assert "pushover_configured" not in data
+    assert "scheduler_secret_configured" not in data
 
 
 @pytest.mark.asyncio

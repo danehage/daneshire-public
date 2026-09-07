@@ -1,8 +1,9 @@
+import asyncio
 import base64
+import binascii
 import os
 import secrets
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,6 +19,106 @@ from app.config import settings
 from app.database import get_db
 
 
+class FailureThrottle:
+    """Backoff over recent failed credential attempts.
+
+    Deliberately NOT keyed on client IP. The previous implementation
+    bucketed failures by ``request.client.host`` and checked the bucket
+    *before* validating credentials, which made it either a self-DoS (all
+    callers share one bucket behind a proxy, so five anonymous requests
+    locked the owner out of the app for five minutes) or useless (where
+    X-Forwarded-For is trusted, an attacker rotates the header and never
+    trips it). Both were verified against a local instance.
+
+    Correct credentials are checked before this is consulted and are never
+    delayed, so there is no lockout an attacker can trigger against the
+    owner; only failures are slowed.
+    """
+
+    WINDOW_SECONDS = 300
+    FREE_ATTEMPTS = 5           # attempts before backoff kicks in
+    BASE_SECONDS = 0.5
+    MAX_SECONDS = 5.0
+    MAX_TRACKED = 1000          # hard cap so the list cannot grow unbounded
+
+    def __init__(self) -> None:
+        self._failures: list[float] = []
+
+    def reset(self) -> None:
+        """Drop recorded failures. Used by tests."""
+        self._failures.clear()
+
+    def record_failure(self) -> None:
+        if len(self._failures) >= self.MAX_TRACKED:
+            self._failures.pop(0)
+        self._failures.append(time.monotonic())
+
+    def recent_failures(self) -> int:
+        """Prune expired failures and return how many remain in the window."""
+        now = time.monotonic()
+        self._failures = [
+            t for t in self._failures if now - t < self.WINDOW_SECONDS
+        ]
+        return len(self._failures)
+
+    def backoff_seconds(self) -> float:
+        """Delay to apply to the failed attempt just recorded."""
+        excess = self.recent_failures() - self.FREE_ATTEMPTS
+        if excess <= 0:
+            return 0.0
+        return min(self.BASE_SECONDS * (2 ** (excess - 1)), self.MAX_SECONDS)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Baseline response hardening.
+
+    The app previously returned no security headers at all, so: Basic Auth
+    credentials (base64, trivially decoded) were strippable on a first
+    plain-HTTP visit, and the terminal could be framed by any origin.
+
+    The CSP is deliberately narrow. The Vite production build emits
+    content-hashed JS/CSS under /assets and no inline <script>, so
+    ``script-src 'self'`` holds. ``style-src`` allows inline styles because
+    React sets element styles directly (recharts sizing, transient
+    drag-and-drop transforms from @dnd-kit).
+    """
+
+    CSP = "; ".join(
+        (
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "object-src 'none'",
+        )
+    )
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        headers = response.headers
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        headers.setdefault("Content-Security-Policy", self.CSP)
+        # Cloud Run terminates TLS; only assert HSTS where the deployment is
+        # actually HTTPS, so local http:// development is unaffected.
+        if settings.is_production:
+            headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains",
+            )
+        return response
+
+
+# One throttle per process. Tests reset it via ``auth_throttle.reset()``.
+auth_throttle = FailureThrottle()
+
+
 class BasicAuthMiddleware(BaseHTTPMiddleware):
     """HTTP Basic Auth middleware for protecting the app."""
 
@@ -26,45 +127,33 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     # Paths that use scheduler secret instead of basic auth
     INTERNAL_PREFIX = "/api/internal/"
 
-    # API surface reachable with guest credentials: scanner + earnings
-    # market data + the read-only ticker context block (guests reach the
+    # API surface reachable with guest credentials: read-only scanner +
+    # earnings market data and the ticker context block (guests reach the
     # ticker detail page from scan results). Everything else under /api/
     # is owner-only. Non-/api paths (the static frontend) are always
     # reachable once authenticated.
+    #
+    # NOTE: starting a scan is deliberately NOT reachable as a guest. Each
+    # POST /api/scan/execute fans out to ~900 paid FMP requests and retains
+    # the results in memory — see GUEST_DENIED_API_PREFIXES.
     GUEST_ALLOWED_API_PREFIXES = ("/api/me", "/api/scan", "/api/earnings", "/api/ticker")
-    GUEST_DENIED_API_PREFIXES = ("/api/earnings/trades",)
-
-    # Rate limiting: max failed attempts per IP before lockout
-    MAX_FAILED_ATTEMPTS = 5
-    LOCKOUT_SECONDS = 300  # 5 minutes
-
-    def __init__(self, app):
-        super().__init__(app)
-        # Track failed attempts: {ip: [(timestamp, ...), ...]}
-        self._failed_attempts: dict[str, list[float]] = defaultdict(list)
-
-    def _is_rate_limited(self, client_ip: str) -> bool:
-        """Check if an IP is locked out due to too many failed attempts."""
-        now = time.monotonic()
-        # Remove expired entries
-        self._failed_attempts[client_ip] = [
-            t for t in self._failed_attempts[client_ip]
-            if now - t < self.LOCKOUT_SECONDS
-        ]
-        return len(self._failed_attempts[client_ip]) >= self.MAX_FAILED_ATTEMPTS
-
-    def _record_failure(self, client_ip: str):
-        self._failed_attempts[client_ip].append(time.monotonic())
+    GUEST_DENIED_API_PREFIXES = ("/api/earnings/trades", "/api/scan/execute")
 
     def _resolve_role(self, username: str, password: str) -> str | None:
         """Map credentials to a role, or None if they match nothing.
 
         Both credential pairs are always compared to keep timing uniform.
+        ``compare_digest`` raises TypeError on non-ASCII str input, so the
+        comparison is done over UTF-8 bytes instead.
         """
-        owner_user = secrets.compare_digest(username, settings.auth_username)
-        owner_pass = secrets.compare_digest(password, settings.auth_password)
-        guest_user = secrets.compare_digest(username, settings.guest_username)
-        guest_pass = secrets.compare_digest(password, settings.guest_password)
+
+        def _eq(a: str, b: str) -> bool:
+            return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+        owner_user = _eq(username, settings.auth_username)
+        owner_pass = _eq(password, settings.auth_password)
+        guest_user = _eq(username, settings.guest_username)
+        guest_pass = _eq(password, settings.guest_password)
 
         if owner_user and owner_pass:
             return "owner"
@@ -78,6 +167,18 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         if path.startswith(self.GUEST_DENIED_API_PREFIXES):
             return False
         return path.startswith(self.GUEST_ALLOWED_API_PREFIXES)
+
+    @staticmethod
+    def _credentials_from(request: Request) -> tuple[str, str] | None:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Basic "):
+            return None
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            username, password = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            return None
+        return username, password
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -95,42 +196,34 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             request.state.role = "owner"
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
+        # Validate credentials FIRST. A caller presenting correct credentials
+        # is never delayed or refused, however many failures preceded them —
+        # that is what stops an attacker from locking the owner out.
+        credentials = self._credentials_from(request)
+        if credentials is not None:
+            role = self._resolve_role(*credentials)
+            if role == "guest" and not self._is_guest_allowed(path):
+                # An authenticated guest on an owner-only path is a routing
+                # mistake, not a credential guess: no backoff.
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "This section requires owner access"},
+                )
+            if role is not None:
+                request.state.role = role
+                return await call_next(request)
 
-        # Check rate limit before processing credentials
-        if self._is_rate_limited(client_ip):
-            return Response(
-                content="Too many failed attempts. Try again later.",
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                headers={"Retry-After": str(self.LOCKOUT_SECONDS)},
-            )
-
-        # Check Authorization header
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Basic "):
-            try:
-                credentials = base64.b64decode(auth_header[6:]).decode("utf-8")
-                username, password = credentials.split(":", 1)
-
-                role = self._resolve_role(username, password)
-                if role == "guest" and not self._is_guest_allowed(path):
-                    return JSONResponse(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        content={"detail": "This section requires owner access"},
-                    )
-                if role is not None:
-                    request.state.role = role
-                    return await call_next(request)
-            except (ValueError, UnicodeDecodeError):
-                pass
-
-        # Auth failed - record and return 401
-        self._record_failure(client_ip)
+        # Bad or absent credentials: slow the guess down, then 401.
+        auth_throttle.record_failure()
+        delay = auth_throttle.backoff_seconds()
+        if delay:
+            await asyncio.sleep(delay)
         return Response(
             content="Authentication required",
             status_code=status.HTTP_401_UNAUTHORIZED,
             headers={"WWW-Authenticate": 'Basic realm="Danecast Trades"'},
         )
+
 
 # Static files directory (frontend build)
 STATIC_DIR = Path(__file__).parent.parent / "static"
@@ -189,14 +282,25 @@ async def lifespan(app: FastAPI):
         await tastytrade.aclose()
 
 
+# The OpenAPI schema enumerates every route, including /api/internal/*, and
+# was readable with guest credentials. Serve it only outside production.
+_docs_enabled = not settings.is_production
+
 app = FastAPI(
     title="Danecast Trades API",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 # Basic auth middleware (production security)
 app.add_middleware(BasicAuthMiddleware)
+
+# Added last => outermost layer, so security headers are attached to every
+# response including the 401/403 the auth middleware returns itself.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS: Only needed for local development (cross-origin requests from Vite dev server)
 # In production, frontend is served from same origin, so CORS is not needed

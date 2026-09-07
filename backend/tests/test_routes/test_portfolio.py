@@ -711,6 +711,12 @@ _CANNED_TRADE = ParsedTrade(
 )
 
 
+# The upload routes require this header: multipart/form-data is a
+# CORS-simple content type, so it is the only thing distinguishing our own
+# script from a cross-site form post riding cached Basic Auth credentials.
+UPLOAD_HEADERS = {"X-Requested-With": "danecast-trades"}
+
+
 def _fake_image_upload():
     return ("image", io.BytesIO(b"fake-png-bytes"), "image/png")
 
@@ -730,6 +736,7 @@ async def test_parse_snapshot_returns_diff(fake_parser_client: AsyncClient):
     """POST /snapshots/parse returns SnapshotDiffResponse with no DB writes."""
     response = await fake_parser_client.post(
         "/api/portfolio/snapshots/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
     assert response.status_code == 200
@@ -756,6 +763,7 @@ async def test_parse_snapshot_no_db_writes(
 
     await fake_parser_client.post(
         "/api/portfolio/snapshots/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
 
@@ -776,6 +784,7 @@ async def test_parse_snapshot_low_confidence_returns_422(client: AsyncClient):
     try:
         response = await client.post(
             "/api/portfolio/snapshots/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert response.status_code == 422
@@ -792,6 +801,7 @@ async def test_parse_snapshot_rate_limited_returns_429(client: AsyncClient):
     try:
         response = await client.post(
             "/api/portfolio/snapshots/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert response.status_code == 429
@@ -808,6 +818,7 @@ async def test_parse_snapshot_upstream_error_returns_502(client: AsyncClient):
     try:
         response = await client.post(
             "/api/portfolio/snapshots/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert response.status_code == 502
@@ -820,6 +831,7 @@ async def test_parse_then_commit_round_trip(fake_parser_client: AsyncClient):
     """Parse returns a snapshot; frontend calls commit with the same payload; persisted."""
     parse_resp = await fake_parser_client.post(
         "/api/portfolio/snapshots/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
     assert parse_resp.status_code == 200
@@ -884,6 +896,7 @@ async def test_parse_snapshot_diff_classification(fake_parser_client: AsyncClien
     try:
         resp = await fake_parser_client.post(
             "/api/portfolio/snapshots/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert resp.status_code == 200
@@ -903,6 +916,7 @@ async def test_parse_snapshot_no_parser_configured(client: AsyncClient):
     try:
         response = await client.post(
             "/api/portfolio/snapshots/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert response.status_code == 503
@@ -920,6 +934,7 @@ async def test_parse_trade_returns_parsed_trade(fake_parser_client: AsyncClient)
     """POST /trades/parse returns the parsed fill; unknown account → null account_id."""
     response = await fake_parser_client.post(
         "/api/portfolio/trades/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
     assert response.status_code == 200
@@ -944,6 +959,7 @@ async def test_parse_trade_resolves_known_account(
 
     response = await fake_parser_client.post(
         "/api/portfolio/trades/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
     assert response.status_code == 200
@@ -957,6 +973,7 @@ async def test_parse_trade_no_db_writes(
     """POST /trades/parse is stateless: no Trade rows created."""
     await fake_parser_client.post(
         "/api/portfolio/trades/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
     trades = (await db_session.execute(select(Trade))).scalars().all()
@@ -972,6 +989,7 @@ async def test_parse_trade_low_confidence_returns_422(client: AsyncClient):
     try:
         response = await client.post(
             "/api/portfolio/trades/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert response.status_code == 422
@@ -986,6 +1004,7 @@ async def test_parse_trade_no_parser_configured(client: AsyncClient):
     try:
         response = await client.post(
             "/api/portfolio/trades/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert response.status_code == 503
@@ -1004,6 +1023,7 @@ async def test_parse_trade_then_commit_round_trip(
 
     parse_resp = await fake_parser_client.post(
         "/api/portfolio/trades/parse",
+        headers=UPLOAD_HEADERS,
         files={"image": _fake_image_upload()},
     )
     assert parse_resp.status_code == 200
@@ -1066,6 +1086,7 @@ async def test_parse_trade_option_fields_round_trip(
     try:
         parse_resp = await client.post(
             "/api/portfolio/trades/parse",
+            headers=UPLOAD_HEADERS,
             files={"image": _fake_image_upload()},
         )
         assert parse_resp.status_code == 200
@@ -1305,3 +1326,84 @@ async def test_commit_trade_two_accounts_partial_close_stays_owned(
     wl_item = result.scalar_one_or_none()
     assert wl_item is not None
     assert wl_item.status == "owned"
+
+
+# ---------------------------------------------------------------------------
+# Upload guards (pre-launch audit)
+#
+# image.read() used to be unbounded with no content-type check, on a 512Mi
+# max-instances-1 service; and multipart/form-data is a CORS-simple content
+# type, so these two routes were reachable cross-site with the browser's
+# cached Basic Auth credentials attached.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upload_rejected_without_same_origin_proof(
+    fake_parser_client: AsyncClient,
+):
+    for path in ("/api/portfolio/snapshots/parse", "/api/portfolio/trades/parse"):
+        response = await fake_parser_client.post(path, files={"image": _fake_image_upload()})
+        assert response.status_code == 403, path
+        assert "Cross-site" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_upload_accepted_on_same_origin_fetch_metadata(
+    fake_parser_client: AsyncClient,
+):
+    """Browsers that send Sec-Fetch-Site need no custom header."""
+    response = await fake_parser_client.post(
+        "/api/portfolio/snapshots/parse",
+        headers={"Sec-Fetch-Site": "same-origin"},
+        files={"image": _fake_image_upload()},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_upload_rejected_on_cross_site_fetch_metadata(
+    fake_parser_client: AsyncClient,
+):
+    response = await fake_parser_client.post(
+        "/api/portfolio/snapshots/parse",
+        headers={"Sec-Fetch-Site": "cross-site", **UPLOAD_HEADERS},
+        files={"image": _fake_image_upload()},
+    )
+    # The custom header still vouches for it — only a browser sets
+    # Sec-Fetch-Site, and a browser cannot set X-Requested-With cross-origin
+    # without a preflight.
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_non_image_content_type(fake_parser_client: AsyncClient):
+    response = await fake_parser_client.post(
+        "/api/portfolio/snapshots/parse",
+        headers=UPLOAD_HEADERS,
+        files={"image": ("payload.html", io.BytesIO(b"<script>x</script>"), "text/html")},
+    )
+    assert response.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_oversized_image(fake_parser_client: AsyncClient):
+    from app.routes.portfolio import MAX_UPLOAD_BYTES
+
+    oversized = b"\x00" * (MAX_UPLOAD_BYTES + 1024)
+    response = await fake_parser_client.post(
+        "/api/portfolio/snapshots/parse",
+        headers=UPLOAD_HEADERS,
+        files={"image": ("big.png", io.BytesIO(oversized), "image/png")},
+    )
+    assert response.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_empty_image(fake_parser_client: AsyncClient):
+    response = await fake_parser_client.post(
+        "/api/portfolio/snapshots/parse",
+        headers=UPLOAD_HEADERS,
+        files={"image": ("empty.png", io.BytesIO(b""), "image/png")},
+    )
+    assert response.status_code == 422

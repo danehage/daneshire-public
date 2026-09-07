@@ -8,9 +8,11 @@ out (504) on large universes.
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
+from app.routes import scanner as scanner_routes
 from app.services.market import get_market
 from app.main import app
 
@@ -166,3 +168,87 @@ async def test_results_returns_scored_partials_while_running(client):
     body = final.json()
     assert body["partial"] is False
     assert [r["ticker"] for r in body["results"]] == ["BBB", "CCC", "AAA"]
+
+
+# --- Scan state bounds -----------------------------------------------------
+#
+# Each scan_state retains the full scored result set for its universe
+# (~900 rows). _active_scans used to grow for the life of the process, so
+# repeated scans exhausted the 512Mi Cloud Run instance; and nothing capped
+# how many scans could run at once against a paid upstream API.
+
+
+@pytest.mark.asyncio
+async def test_second_concurrent_scan_is_refused(client):
+    fake = _FakeMarket()
+    app.dependency_overrides[get_market] = lambda: fake
+    scanner_routes._active_scans.clear()
+    try:
+        first = await client.post("/api/scan/execute", json={"universe": "sp500_sample"})
+        assert first.status_code == 200
+
+        second = await client.post("/api/scan/execute", json={"universe": "sp500_sample"})
+        assert second.status_code == 409
+        assert "already running" in second.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+        scanner_routes._active_scans.clear()
+
+
+def test_prune_drops_scans_that_aged_out():
+    scanner_routes._active_scans.clear()
+    stale = datetime.utcnow() - timedelta(
+        seconds=scanner_routes._SCAN_RETENTION_SECONDS + 60
+    )
+    scanner_routes._active_scans["old"] = {
+        "status": "complete",
+        "started_at": stale,
+        "completed_at": stale,
+    }
+    scanner_routes._active_scans["fresh"] = {
+        "status": "complete",
+        "started_at": datetime.utcnow(),
+        "completed_at": datetime.utcnow(),
+    }
+
+    scanner_routes._prune_scans()
+
+    assert "old" not in scanner_routes._active_scans
+    assert "fresh" in scanner_routes._active_scans
+    scanner_routes._active_scans.clear()
+
+
+def test_prune_enforces_the_count_cap():
+    scanner_routes._active_scans.clear()
+    now = datetime.utcnow()
+    for i in range(scanner_routes._MAX_RETAINED_SCANS + 5):
+        scanner_routes._active_scans[f"scan-{i}"] = {
+            "status": "complete",
+            # Ascending timestamps: scan-0 is the oldest.
+            "started_at": now + timedelta(seconds=i),
+            "completed_at": now + timedelta(seconds=i),
+        }
+
+    scanner_routes._prune_scans()
+
+    assert len(scanner_routes._active_scans) == scanner_routes._MAX_RETAINED_SCANS
+    # The oldest five went; the newest survived.
+    assert "scan-0" not in scanner_routes._active_scans
+    assert f"scan-{scanner_routes._MAX_RETAINED_SCANS + 4}" in scanner_routes._active_scans
+    scanner_routes._active_scans.clear()
+
+
+def test_prune_never_drops_a_running_scan():
+    scanner_routes._active_scans.clear()
+    stale = datetime.utcnow() - timedelta(
+        seconds=scanner_routes._SCAN_RETENTION_SECONDS + 60
+    )
+    scanner_routes._active_scans["running"] = {
+        "status": "running",
+        "started_at": stale,
+    }
+
+    scanner_routes._prune_scans()
+
+    assert "running" in scanner_routes._active_scans
+    scanner_routes._active_scans.clear()

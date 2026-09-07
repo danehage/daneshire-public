@@ -9,6 +9,7 @@ import os
 from datetime import datetime, date
 from typing import Optional
 
+from urllib.parse import quote as urlquote
 import httpx
 
 from app.config import settings
@@ -113,7 +114,7 @@ class FMPClient:
     async def get_quote(self, ticker: str) -> Optional[dict]:
         """Fetch a single stock quote."""
         try:
-            url = f"{self.BASE_URL}/stable/quote?symbol={ticker}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/quote?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(url)
 
@@ -162,7 +163,7 @@ class FMPClient:
                 symbols = ",".join(chunk)
                 url = (
                     f"{self.BASE_URL}/stable/batch-quote"
-                    f"?symbols={symbols}&apikey={self.api_key}"
+                    f"?symbols={urlquote(symbols, safe=',')}&apikey={self.api_key}"
                 )
                 response = await self._request_with_retry(url, client)
 
@@ -190,7 +191,7 @@ class FMPClient:
                     for ticker in chunk:
                         single_url = (
                             f"{self.BASE_URL}/stable/quote"
-                            f"?symbol={ticker}&apikey={self.api_key}"
+                            f"?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
                         )
                         single = await self._request_with_retry(single_url, client)
                         if single is not None:
@@ -223,7 +224,7 @@ class FMPClient:
                 return cached[:days] if len(cached) > days else cached
 
         try:
-            url = f"{self.BASE_URL}/stable/historical-price-eod/full?symbol={ticker}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/historical-price-eod/full?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await self._request_with_retry(url, client)
 
@@ -300,7 +301,7 @@ class FMPClient:
         on this plan.
         """
         try:
-            url = f"{self.BASE_URL}/stable/profile?symbol={ticker}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/profile?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
                 if response:
@@ -319,7 +320,7 @@ class FMPClient:
         those fields moved to /stable/ratios-ttm.
         """
         try:
-            url = f"{self.BASE_URL}/stable/ratios-ttm?symbol={ticker}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/ratios-ttm?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
                 if response:
@@ -338,7 +339,7 @@ class FMPClient:
         try:
             url = (
                 f"{self.BASE_URL}/stable/income-statement"
-                f"?symbol={ticker}&period=quarter&limit={limit}&apikey={self.api_key}"
+                f"?symbol={urlquote(ticker, safe='')}&period=quarter&limit={limit}&apikey={self.api_key}"
             )
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
@@ -358,7 +359,7 @@ class FMPClient:
         try:
             url = (
                 f"{self.BASE_URL}/stable/news/stock"
-                f"?symbols={ticker}&limit={limit}&apikey={self.api_key}"
+                f"?symbols={urlquote(ticker, safe='')}&limit={limit}&apikey={self.api_key}"
             )
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
@@ -380,7 +381,7 @@ class FMPClient:
             # /stable/earnings replaces the legacy-gated /api/v3/earning_calendar
             # (dead on this plan since the 2025-08-31 cutoff — every call
             # returned an error payload, so earnings dates were silently None).
-            url = f"{self.BASE_URL}/stable/earnings?symbol={ticker}&limit=8&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/earnings?symbol={urlquote(ticker, safe='')}&limit=8&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(url)
 

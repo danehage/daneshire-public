@@ -31,9 +31,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies from the hash-pinned lockfile, so the image is
+# reproducible and a tampered or swapped package fails the build rather than
+# shipping. requirements.txt stays the source of truth for direct deps; see
+# the regeneration command in its header.
+COPY backend/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Copy backend code
 COPY backend/app ./app

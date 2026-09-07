@@ -54,6 +54,11 @@ export async function getValueHistory(accountId) {
 export async function parseTrade(formData) {
   const res = await fetch(`${API_BASE}/api/portfolio/trades/parse`, {
     method: "POST",
+    // multipart/form-data is a CORS-simple content type, so the backend
+    // requires this header to prove the request came from our own script
+    // rather than a cross-site form post riding the cached Basic Auth
+    // credentials.
+    headers: { "X-Requested-With": "danecast-trades" },
     body: formData,
   });
   if (!res.ok) {
@@ -66,6 +71,11 @@ export async function parseTrade(formData) {
 export async function parseSnapshot(formData) {
   const res = await fetch(`${API_BASE}/api/portfolio/snapshots/parse`, {
     method: "POST",
+    // multipart/form-data is a CORS-simple content type, so the backend
+    // requires this header to prove the request came from our own script
+    // rather than a cross-site form post riding the cached Basic Auth
+    // credentials.
+    headers: { "X-Requested-With": "danecast-trades" },
     body: formData,
   });
   if (!res.ok) {

@@ -12,7 +12,7 @@ Stock research terminal with watchlist management, trade journaling, alerts, and
 | Backend | FastAPI + Uvicorn | Async, SSE for scan streaming, auto OpenAPI docs |
 | Database | Neon Postgres (managed) | JSONB alerts, full-text journal search, relational joins |
 | ORM | SQLAlchemy 2.0 (async) + Alembic | Typed models, migration history |
-| Auth | None | Single user, no auth layer needed |
+| Auth | HTTP Basic, two roles | Owner (full) + optional read-only guest, enforced in `BasicAuthMiddleware`. Cloud Scheduler uses `X-Scheduler-Secret` |
 | Notifications | Pushover | Push alerts to phone, priority levels |
 | Market data | FMP API (quotes/historical) | Existing integration, ported from v1 |
 | Deploy | GCP Cloud Run + Cloud Scheduler | Scales to zero, cron for alert engine |
@@ -48,7 +48,8 @@ danecast-trades/
 │   ├── alembic/           ← migration versions
 │   ├── alembic.ini
 │   ├── tests/
-│   ├── requirements.txt
+│   ├── requirements.txt   ← direct deps (source of truth)
+│   ├── requirements.lock  ← hash-pinned, what the image installs
 │   └── Dockerfile
 ├── frontend/
 │   ├── CLAUDE.md          ← frontend-specific context
@@ -85,6 +86,26 @@ danecast-trades/
 - When adding a new table or column, always create an Alembic migration: `alembic revision --autogenerate -m "description"`
 - Alert conditions stored as JSONB — do not create separate columns per condition type
 - Use `text[]` arrays for tags and signals, not join tables
+
+## Auth and roles
+
+- Two credential pairs: owner (`AUTH_USERNAME`/`AUTH_PASSWORD`) and an
+  optional read-only guest (`GUEST_USERNAME`/`GUEST_PASSWORD`). Guest is
+  disabled when either guest variable is empty.
+- The owner/guest boundary is a **path-prefix allowlist** in
+  `BasicAuthMiddleware` (`backend/app/main.py`), not a per-route check. A new
+  owner-only route under an allowed prefix is reachable by guests — when
+  adding routes under `/api/scan`, `/api/earnings`, `/api/ticker` or
+  `/api/me`, check `GUEST_ALLOWED_API_PREFIXES` / `GUEST_DENIED_API_PREFIXES`
+  and add a test in `backend/tests/test_guest_auth.py`.
+- Guests must not reach anything that spends money or exposes personal data.
+  `POST /api/scan/execute` is guest-denied for that reason.
+- Correct credentials are never rate-limited. Only failed attempts are
+  slowed, and the backoff is process-global rather than keyed on client IP —
+  do not reintroduce IP-keyed limiting, which behind a proxy either locks out
+  the owner or is trivially evaded.
+- `/api/internal/*` bypasses Basic Auth and requires `X-Scheduler-Secret` on
+  **every** route, health check included.
 
 ## API rules
 

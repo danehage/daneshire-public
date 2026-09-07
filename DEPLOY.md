@@ -495,7 +495,7 @@ curl ${SERVICE_URL}/api/health
 curl ${SERVICE_URL}/api/health/db
 
 # Check internal endpoint (with secret)
-curl -X POST ${SERVICE_URL}/api/internal/health \
+curl ${SERVICE_URL}/api/internal/health \
   -H "X-Scheduler-Secret: ${SCHEDULER_SECRET}"
 ```
 
