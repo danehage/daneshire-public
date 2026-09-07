@@ -6,7 +6,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
-from app.main import app
+from app.database import _get_ssl_context, _split_ssl_option
+from app.main import app, auth_throttle
 from app.database import get_db
 from app.config import settings
 from app.services.market import get_market
@@ -58,17 +59,39 @@ class _NullMarket:
         return [None] * len(events)
 
 
+# --- Auth neutralisation (issue #64) ----------------------------------------
+#
+# BasicAuthMiddleware is skipped entirely when no credentials are configured,
+# so the route tests were written to call endpoints unauthenticated. A
+# developer .env with AUTH_USERNAME/AUTH_PASSWORD set therefore turned the
+# whole route suite red with 401s — and, once failed attempts started
+# incurring backoff, slow as well (one test file went from 0.6s to 33s).
+#
+# Settings are process-wide, so blank the credentials for every test. Tests
+# that exercise the middleware on purpose (test_guest_auth.py,
+# test_security_headers.py) set them again in their own fixtures, which run
+# after this one.
+@pytest.fixture(autouse=True)
+def _disable_auth_by_default(monkeypatch):
+    monkeypatch.setattr(settings, "auth_username", "")
+    monkeypatch.setattr(settings, "auth_password", "")
+    monkeypatch.setattr(settings, "guest_username", "")
+    monkeypatch.setattr(settings, "guest_password", "")
+    auth_throttle.reset()
+    yield
+    auth_throttle.reset()
+
+
 @pytest_asyncio.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Create a database session for testing that uses the real Neon database."""
-    import ssl
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-
+    """Create a database session for testing against a real Postgres."""
+    # Same URL/TLS handling as the app, so a plaintext local or CI Postgres
+    # works via ?sslmode=disable and a remote one still gets a verifying
+    # context. (This fixture used to build its own CERT_NONE context.)
+    url, use_tls = _split_ssl_option(settings.neon_database_url)
     engine = create_async_engine(
-        settings.neon_database_url,
-        connect_args={"ssl": ssl_ctx},
+        url,
+        connect_args={"ssl": _get_ssl_context()} if use_tls else {},
     )
 
     async_session = async_sessionmaker(

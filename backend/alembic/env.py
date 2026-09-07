@@ -1,5 +1,4 @@
 import asyncio
-import ssl
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -9,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 from app.config import settings
+from app.database import _get_ssl_context, _split_ssl_option
 from app.models import Base
 
 config = context.config
@@ -20,14 +20,23 @@ target_metadata = Base.metadata
 
 
 def get_url():
-    return settings.neon_database_url
+    """URL with any ssl/sslmode parameter removed (see app.database)."""
+    url, _ = _split_ssl_option(settings.neon_database_url)
+    return url
 
 
-def get_ssl_context():
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-    return ssl_ctx
+def get_connect_args() -> dict:
+    """TLS settings for the migration connection.
+
+    This previously built a context with ``check_hostname = False`` and
+    ``verify_mode = CERT_NONE`` — TLS with no certificate verification at
+    all, on the connection that Cloud Build points at the production
+    database on every deploy. It now uses the same verifying context as the
+    application, and honours an explicit opt-out in the URL for a plaintext
+    local/CI Postgres.
+    """
+    _, use_tls = _split_ssl_option(settings.neon_database_url)
+    return {"ssl": _get_ssl_context()} if use_tls else {}
 
 
 def run_migrations_offline() -> None:
@@ -60,7 +69,7 @@ async def run_async_migrations() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args={"ssl": get_ssl_context()},
+        connect_args=get_connect_args(),
     )
 
     async with connectable.connect() as connection:
