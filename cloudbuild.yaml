@@ -56,6 +56,13 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
+      # Dedicated minimal runtime identity (issue #79). Pinned here so deploys
+      # never silently revert to the default compute SA, which is also the
+      # build SA and carries project-level run.admin + storage.admin. The
+      # runtime SA has only secretmanager.secretAccessor plus objectCreator on
+      # the backup bucket — it cannot delete or overwrite backups.
+      - '--service-account'
+      - 'danecast-runtime@$PROJECT_ID.iam.gserviceaccount.com'
       - '--set-env-vars'
       - 'ENVIRONMENT=production'
       - '--set-secrets'

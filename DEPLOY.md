@@ -382,16 +382,37 @@ EOF
 gsutil lifecycle set /tmp/lifecycle.json gs://daneshire-db-backups
 ```
 
-**2. Grant the Cloud Run service account write access to the bucket.**
+**2. Grant the Cloud Run runtime service account write access to the bucket.**
+
+The service runs as a dedicated minimal SA, `danecast-runtime@daneshire.iam.gserviceaccount.com`
+(pinned via `--service-account` in `cloudbuild.yaml` — see issue #79). It holds
+only `roles/secretmanager.secretAccessor` at the project level and
+`roles/storage.objectCreator` on this bucket. `objectCreator` can create new
+objects but not delete or overwrite existing ones — a compromised app cannot
+destroy backups, and retention is enforced by the 30-day lifecycle rule
+instead. (Side effect: re-running the backup job on a day whose dump already
+exists returns 403/500; harmless, the nightly date-named object is unaffected.)
+
+One-time setup, if recreating from scratch:
 
 ```bash
-# Find the Cloud Run service account (usually Compute Engine default SA)
-SA=$(gcloud run services describe danecast-trades \
-  --region us-central1 \
-  --format 'value(spec.template.spec.serviceAccountName)')
+gcloud iam service-accounts create danecast-runtime \
+  --display-name "Danecast Trades runtime (Cloud Run)"
 
-gsutil iam ch serviceAccount:${SA}:roles/storage.objectAdmin \
-  gs://daneshire-db-backups
+gcloud projects add-iam-policy-binding daneshire \
+  --member "serviceAccount:danecast-runtime@daneshire.iam.gserviceaccount.com" \
+  --role "roles/secretmanager.secretAccessor"
+
+gcloud storage buckets add-iam-policy-binding gs://daneshire-db-backups \
+  --member "serviceAccount:danecast-runtime@daneshire.iam.gserviceaccount.com" \
+  --role "roles/storage.objectCreator"
+
+# The Cloud Build SA (default compute SA) must be able to deploy AS the
+# runtime SA, or every build's deploy step fails with an actAs error:
+gcloud iam service-accounts add-iam-policy-binding \
+  danecast-runtime@daneshire.iam.gserviceaccount.com \
+  --member "serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
+  --role "roles/iam.serviceAccountUser"
 ```
 
 **3. Bind the bucket name secret to Cloud Run.**
