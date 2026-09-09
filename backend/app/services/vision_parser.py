@@ -175,28 +175,30 @@ def get_vision_parser_from_state(app) -> VisionParser | None:
 class GeminiVisionParser:
     """Gemini-backed VisionParser adapter.
 
-    The ``google-generativeai`` import is deferred to __init__ so that this
-    module can be imported in tests without the library being available. Tests
-    use FakeVisionParser injected via dependency_overrides instead.
+    The ``google-genai`` import is deferred to __init__ so that this module
+    can be imported in tests without the library being available. Tests use
+    FakeVisionParser injected via dependency_overrides instead.
 
     Raises ``ValueError`` if ``GEMINI_API_KEY`` is not configured; the caller
     (lifespan) catches this and sets ``app.state.vision_parser = None``.
-    Raises ``ImportError`` if ``google-generativeai`` is not installed.
+    Raises ``ImportError`` if ``google-genai`` is not installed.
     """
 
     def __init__(self) -> None:
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types as genai_types
             self._genai = genai
+            self._types = genai_types
         except (ImportError, Exception) as exc:
             raise ImportError(
-                "google-generativeai is required for GeminiVisionParser"
+                "google-genai is required for GeminiVisionParser"
             ) from exc
 
         if not settings.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not configured")
 
-        self._genai.configure(api_key=settings.gemini_api_key)
+        self._client = self._genai.Client(api_key=settings.gemini_api_key)
         self._model_name = "gemini-2.5-flash"
 
     async def parse_portfolio(
@@ -225,19 +227,18 @@ class GeminiVisionParser:
         account_hint: str | None,
     ):
         try:
-            model = self._genai.GenerativeModel(
-                self._model_name,
-                generation_config={"response_mime_type": "application/json"},
+            json_config = self._types.GenerateContentConfig(
+                response_mime_type="application/json",
             )
-            prompt_parts = [system_prompt]
+            contents: list = [system_prompt]
             if account_hint:
-                prompt_parts.append(f"Account hint from user: {account_hint}")
-            prompt_parts.append(
-                {"mime_type": "image/png", "data": image_bytes}
+                contents.append(f"Account hint from user: {account_hint}")
+            contents.append(
+                self._types.Part.from_bytes(data=image_bytes, mime_type="image/png")
             )
 
             parsed = await self._generate_and_validate(
-                model, prompt_parts, schema_cls
+                contents, json_config, schema_cls
             )
 
             if parsed.confidence < CONFIDENCE_THRESHOLD:
@@ -259,8 +260,10 @@ class GeminiVisionParser:
     async def generate_text(self, prompt: str) -> str:
         """Free-form text generation — used for the ticker context narrative."""
         try:
-            model = self._genai.GenerativeModel(self._model_name)
-            response = await model.generate_content_async(prompt)
+            response = await self._client.aio.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+            )
             return response.text.strip()
         except Exception as exc:
             msg = str(exc).lower()
@@ -268,24 +271,37 @@ class GeminiVisionParser:
                 raise VisionRateLimited(str(exc)) from exc
             raise VisionUpstreamError(str(exc)) from exc
 
-    async def _generate_and_validate(self, model, prompt_parts: list, schema_cls):
+    async def _generate_and_validate(
+        self,
+        contents: list,
+        config,
+        schema_cls,
+    ):
         """Call Gemini and validate the response, retrying once on schema errors.
 
         The retry feeds the validation error back so the model can correct
         field-mapping mistakes (e.g. a full option description left in
         ``ticker`` instead of being decomposed into the option fields).
         """
-        response = await model.generate_content_async(prompt_parts)
+        response = await self._client.aio.models.generate_content(
+            model=self._model_name,
+            contents=contents,
+            config=config,
+        )
         try:
             return schema_cls.model_validate(json.loads(response.text))
         except Exception as exc:
             logger.warning("Gemini response failed validation, retrying: %s", exc)
-            retry_parts = prompt_parts + [
+            retry_contents = contents + [
                 "Your previous response failed schema validation with this error:\n"
                 f"{exc}\n"
                 "Return the corrected JSON object. Remember: \"ticker\" is only the "
                 "underlying symbol; option details belong in option_type / strike / "
                 "expiry / multiplier."
             ]
-            response = await model.generate_content_async(retry_parts)
+            response = await self._client.aio.models.generate_content(
+                model=self._model_name,
+                contents=retry_contents,
+                config=config,
+            )
             return schema_cls.model_validate(json.loads(response.text))
