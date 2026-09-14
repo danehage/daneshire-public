@@ -21,11 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.database import get_db
 from app.models.earnings import EarningsEvent
+from app.models.earnings_trades import EarningsTrade
 from app.models.iv_snapshots import IVSnapshot
 from app.models.portfolio import Account, HoldingGradeHistory
 from app.models.watchlist import WatchlistItem
@@ -35,6 +36,7 @@ from app.schemas.backup import BackupResponse
 from app.schemas.earnings import (
     BackfillRealizedMovesSummary,
     CalendarRefreshSummary,
+    DuplicateMergeSummary,
     HistoryBackfillSummary,
     IVSnapshotRefreshSummary,
 )
@@ -130,6 +132,89 @@ async def expire_stale_alerts(
     return {"status": "ok", "expired": expired}
 
 
+_DRIFT_WINDOW_DAYS = 14  # ±14 days for null-fiscal_period matching (#75)
+
+
+async def _find_drifted_row(
+    db: AsyncSession,
+    ticker: str,
+    incoming_date: date,
+    fiscal_period: Optional[str],
+) -> Optional[EarningsEvent]:
+    """Return an existing future row that represents the same event at a different date.
+
+    Matching rules (issue #75):
+    - Both non-null, same fiscal_period → exact match.
+    - Either side's fiscal_period is null → report_date within ±14 days of
+      the incoming date (but not equal, since equal = same row via the
+      ON CONFLICT path).
+    Only future rows (report_date >= today) are considered; past events are
+    immutable.
+    """
+    from sqlalchemy import or_, and_
+
+    today = date.today()
+    low = incoming_date - timedelta(days=_DRIFT_WINDOW_DAYS)
+    high = incoming_date + timedelta(days=_DRIFT_WINDOW_DAYS)
+
+    if fiscal_period is not None:
+        # Match by exact fiscal_period OR by ±14-day window when the existing
+        # row has null fiscal_period (brief: "either side's fiscal_period is null").
+        stmt = (
+            select(EarningsEvent)
+            .where(EarningsEvent.ticker == ticker)
+            .where(EarningsEvent.report_date != incoming_date)
+            .where(EarningsEvent.report_date >= today)
+            .where(
+                or_(
+                    EarningsEvent.fiscal_period == fiscal_period,
+                    and_(
+                        EarningsEvent.fiscal_period.is_(None),
+                        EarningsEvent.report_date >= low,
+                        EarningsEvent.report_date <= high,
+                    ),
+                )
+            )
+            .limit(1)
+        )
+    else:
+        # Incoming fiscal_period is null → ±14-day window regardless of existing.
+        stmt = (
+            select(EarningsEvent)
+            .where(EarningsEvent.ticker == ticker)
+            .where(EarningsEvent.report_date >= low)
+            .where(EarningsEvent.report_date <= high)
+            .where(EarningsEvent.report_date != incoming_date)
+            .where(EarningsEvent.report_date >= today)
+            .limit(1)
+        )
+
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def _merge_events(
+    db: AsyncSession,
+    keeper: EarningsEvent,
+    loser: EarningsEvent,
+) -> int:
+    """Repoint all earnings_trades from loser → keeper, then delete loser.
+
+    Returns the number of trade rows repointed.
+    """
+    result = await db.execute(
+        update(EarningsTrade)
+        .where(EarningsTrade.earnings_event_id == loser.id)
+        .values(earnings_event_id=keeper.id)
+    )
+    repointed = result.rowcount
+    await db.delete(loser)
+    # The unit of work emits UPDATEs before DELETEs, so a caller that next
+    # moves keeper onto loser's report_date would hit the unique constraint.
+    # Flush now so the loser's row is gone before any such update.
+    await db.flush()
+    return repointed
+
+
 async def _upsert_finnhub_events(
     db: AsyncSession,
     raw_events: list[dict],
@@ -141,9 +226,21 @@ async def _upsert_finnhub_events(
     tickers are dropped before touching the database (the historical
     backfill pulls the full market and keeps only gated names). Existing
     rows keep their ``realized_move_pct`` — the conflict update never
-    touches it. Does not commit.
+    touches it.
+
+    Drift handling (#75): before the plain upsert, looks for an existing
+    future row that represents the same event at a different date
+    (matched by fiscal_period or ±14-day window). If found:
+    - Updates its report_date in place (preserving its id and trade FKs).
+    - If there is already a row at the incoming date, merges the two
+      (repoints trades, deletes the loser).
+    - Past events are never modified.
+
+    Does not commit.
     """
+    today = date.today()
     upserted = 0
+
     for event in raw_events:
         symbol = (event.get("symbol") or "").strip().upper()
         date_str = event.get("date") or ""
@@ -152,7 +249,7 @@ async def _upsert_finnhub_events(
         if only_tickers is not None and symbol not in only_tickers:
             continue
         try:
-            report_date = date.fromisoformat(date_str)
+            incoming_date = date.fromisoformat(date_str)
         except ValueError:
             continue
 
@@ -165,11 +262,60 @@ async def _upsert_finnhub_events(
         if year and quarter:
             fiscal_period = f"Q{quarter} {year}"
 
+        # --- Drift detection -------------------------------------------
+        drifted = await _find_drifted_row(db, symbol, incoming_date, fiscal_period)
+        if drifted is not None:
+            # Existing row is a future event at a different date: move it.
+            old_date = drifted.report_date
+            logger.info(
+                "refresh-calendar: %s %s date drifted %s → %s",
+                symbol,
+                fiscal_period or "(no fiscal_period)",
+                old_date,
+                incoming_date,
+            )
+
+            # Check whether there is already a row sitting at the target date
+            # (a duplicate the bug already created on a prior refresh).
+            collision_stmt = (
+                select(EarningsEvent)
+                .where(EarningsEvent.ticker == symbol)
+                .where(EarningsEvent.report_date == incoming_date)
+                .limit(1)
+            )
+            collision = (await db.execute(collision_stmt)).scalars().first()
+
+            if collision is not None:
+                # Merge: prefer the row with trades; prefer drifted (has the
+                # old entry that trade FKs point at). Repoint all trades from
+                # collision → drifted, then delete collision.
+                logger.info(
+                    "refresh-calendar: merging duplicate %s rows (%s / %s)",
+                    symbol,
+                    drifted.id,
+                    collision.id,
+                )
+                await _merge_events(db, keeper=drifted, loser=collision)
+
+            # Move the drifted row to the new date.
+            drifted.report_date = incoming_date
+            drifted.report_time = report_time
+            drifted.fiscal_period = fiscal_period
+            drifted.source = "finnhub"
+            # If realized_move_pct was set and the date actually changed,
+            # null it so the backfill recomputes it.
+            if drifted.realized_move_pct is not None and old_date != incoming_date:
+                drifted.realized_move_pct = None
+            drifted.updated_at = datetime.now(timezone.utc)
+            upserted += 1
+            continue
+
+        # --- Normal upsert (no drift) ----------------------------------
         stmt = (
             pg_insert(EarningsEvent)
             .values(
                 ticker=symbol,
-                report_date=report_date,
+                report_date=incoming_date,
                 report_time=report_time,
                 fiscal_period=fiscal_period,
                 source="finnhub",
@@ -187,7 +333,135 @@ async def _upsert_finnhub_events(
         )
         await db.execute(stmt)
         upserted += 1
+
     return upserted
+
+
+async def _merge_all_duplicates(
+    db: AsyncSession,
+) -> DuplicateMergeSummary:
+    """Scan for and merge existing duplicate (ticker, same-quarter) pairs.
+
+    A duplicate pair is two rows for the same ticker whose fiscal_periods
+    match (or, when either is null, whose report_dates are within ±14 days).
+    Past pairs are merged too — the duplicates this endpoint exists to clean
+    (IR 07-29/07-30, ROL 07-21/07-29) are already in the past. Merging never
+    rewrites the surviving row's report_date, so the past-events-immutable
+    rule is preserved: we only delete the redundant record, keeping the row
+    most likely to be the real event (trades > realized data > newer row,
+    since the later insert reflects Finnhub's more recent view).
+
+    Idempotent: re-running over a clean table is a no-op.
+    Does not commit.
+    """
+    today = date.today()
+    merges = 0
+    trades_repointed = 0
+    past_pairs_merged = 0
+
+    # Iterate every event and look for a sibling in the same table,
+    # deduplicating within a session-local seen set so a pair is only
+    # processed once.
+    all_stmt = select(EarningsEvent).order_by(
+        EarningsEvent.ticker, EarningsEvent.report_date
+    )
+    all_rows = (await db.execute(all_stmt)).scalars().all()
+
+    processed_ids: set = set()
+
+    for row in all_rows:
+        if row.id in processed_ids:
+            continue
+
+        # Find a sibling: same ticker, different id, same fiscal_period
+        # OR within ±14 days when either side's fiscal_period is null.
+        from sqlalchemy import or_, and_
+
+        low = row.report_date - timedelta(days=_DRIFT_WINDOW_DAYS)
+        high = row.report_date + timedelta(days=_DRIFT_WINDOW_DAYS)
+
+        if row.fiscal_period is not None:
+            sibling_stmt = (
+                select(EarningsEvent)
+                .where(EarningsEvent.ticker == row.ticker)
+                .where(EarningsEvent.id != row.id)
+                .where(
+                    or_(
+                        EarningsEvent.fiscal_period == row.fiscal_period,
+                        and_(
+                            EarningsEvent.fiscal_period.is_(None),
+                            EarningsEvent.report_date >= low,
+                            EarningsEvent.report_date <= high,
+                        ),
+                    )
+                )
+                .limit(1)
+            )
+        else:
+            sibling_stmt = (
+                select(EarningsEvent)
+                .where(EarningsEvent.ticker == row.ticker)
+                .where(EarningsEvent.id != row.id)
+                .where(EarningsEvent.report_date >= low)
+                .where(EarningsEvent.report_date <= high)
+                .limit(1)
+            )
+
+        sibling = (await db.execute(sibling_stmt)).scalars().first()
+        if sibling is None:
+            continue
+
+        # Decide keeper: trades > realized data > newer row (the later
+        # insert reflects Finnhub's more recent view of the date).
+        keeper, loser = row, sibling
+        has_trades_row = await _has_trades(db, row.id)
+        has_trades_sib = await _has_trades(db, sibling.id)
+        if has_trades_sib != has_trades_row:
+            if has_trades_sib:
+                keeper, loser = sibling, row
+        elif (sibling.realized_move_pct is not None) != (
+            row.realized_move_pct is not None
+        ):
+            if sibling.realized_move_pct is not None:
+                keeper, loser = sibling, row
+        elif (
+            sibling.created_at is not None
+            and row.created_at is not None
+            and sibling.created_at > row.created_at
+        ):
+            keeper, loser = sibling, row
+
+        processed_ids.add(keeper.id)
+        processed_ids.add(loser.id)
+
+        logger.info(
+            "merge-duplicates: %s keeping %s (%s), dropping %s (%s)",
+            row.ticker,
+            keeper.id,
+            keeper.report_date,
+            loser.id,
+            loser.report_date,
+        )
+
+        repointed = await _merge_events(db, keeper=keeper, loser=loser)
+        merges += 1
+        trades_repointed += repointed
+        if keeper.report_date < today and loser.report_date < today:
+            past_pairs_merged += 1
+
+    return DuplicateMergeSummary(
+        merges=merges,
+        trades_repointed=trades_repointed,
+        past_pairs_merged=past_pairs_merged,
+    )
+
+
+async def _has_trades(db: AsyncSession, event_id) -> bool:
+    """Return True if any earnings_trades row points at this event."""
+    stmt = select(func.count()).select_from(EarningsTrade).where(
+        EarningsTrade.earnings_event_id == event_id
+    )
+    return int((await db.execute(stmt)).scalar() or 0) > 0
 
 
 @router.post("/earnings/refresh-calendar", response_model=CalendarRefreshSummary)
@@ -209,6 +483,33 @@ async def refresh_earnings_calendar(
     await db.commit()
     logger.info("refresh-calendar: upserted %d events (%s → %s)", upserted, today, end)
     return CalendarRefreshSummary(upserted=upserted, start=today, end=end)
+
+
+@router.post("/earnings/merge-duplicate-events", response_model=DuplicateMergeSummary)
+async def merge_duplicate_earnings_events(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_scheduler_secret),
+):
+    """One-time idempotent cleanup: merge duplicate (ticker, same-quarter) event rows.
+
+    When Finnhub previously moved a report date, the old refresh logic
+    inserted a new row instead of updating the existing one (#75). This
+    endpoint finds those stale duplicate pairs, repoints any
+    ``earnings_trades`` rows from the loser to the keeper, and deletes the
+    loser. Running it twice on a clean table is a no-op.
+
+    Runs within a single transaction committed here; the summary reflects
+    what was actually done this call.
+    """
+    summary = await _merge_all_duplicates(db)
+    await db.commit()
+    logger.info(
+        "merge-duplicate-events: %d pairs merged, %d trades repointed, %d fully-past pairs among them",
+        summary.merges,
+        summary.trades_repointed,
+        summary.past_pairs_merged,
+    )
+    return summary
 
 
 async def _gate_upcoming_tickers(

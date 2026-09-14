@@ -81,6 +81,14 @@ class HistoryBackfillSummary(BaseModel):
     chunks_failed: int
 
 
+class DuplicateMergeSummary(BaseModel):
+    """Result of the one-time duplicate-events merge (#75)."""
+
+    merges: int  # number of (ticker, fiscal_period/window) pairs merged
+    trades_repointed: int  # earnings_trades rows whose earnings_event_id was updated
+    past_pairs_merged: int  # merges where both rows were already in the past
+
+
 # ---------------------------------------------------------------------------
 # Earnings trades — CRUD schemas (issue #16, ADR-0005)
 # ---------------------------------------------------------------------------
