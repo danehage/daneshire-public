@@ -79,7 +79,7 @@ Built entirely on the existing stack — no new infra, no new deploy targets.
 - **Frontend:** React + Vite + Tailwind (existing). New `/earnings` route, new page, new hooks.
 - **Backend:** FastAPI (existing). New `routes/earnings.py` (public) and new endpoints in `routes/internal.py` (scheduler).
 - **DB:** Neon Postgres (existing). Three new tables via Alembic autogenerate.
-- **Scheduler:** Cloud Scheduler → `POST /api/internal/earnings/refresh` with `X-Scheduler-Secret`. Daily, off-hours (22:00 ET).
+- **Scheduler:** Cloud Scheduler → `POST /api/internal/earnings/refresh` with `X-Scheduler-Secret`. Calendar refresh daily off-hours (22:00 ET); IV snapshots daily at 15:45 ET, before the close, so illiquid names still have two-sided quotes (#77, ADR-0006).
 - **Upstream data:**
   - **tastytrade API** (new client inside MarketData) — IV rank, expected move, options chains, Greeks. OAuth with session refresh.
   - **Finnhub** (new client inside MarketData) — earnings calendar. Free tier, 60 calls/min.

@@ -10,6 +10,7 @@ Secured with the ``X-Scheduler-Secret`` header.
 
 import logging
 import secrets
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -613,6 +614,7 @@ async def refresh_iv_snapshots(
     written = 0
     skipped_no_data: list[str] = []
     skipped_rejected_move: list[str] = []
+    skip_reasons: Counter[str] = Counter()
 
     for batch_start in range(0, len(tickers), _SNAPSHOT_BATCH_SIZE):
         batch = tickers[batch_start : batch_start + _SNAPSHOT_BATCH_SIZE]
@@ -622,12 +624,15 @@ async def refresh_iv_snapshots(
             result = snapshots.get(ticker)
             if isinstance(result, MarketDataError):
                 skipped_no_data.append(ticker)
+                skip_reasons[getattr(result, "reason", "error")] += 1
                 continue
             if not isinstance(result, IVSnapshotRaw):  # defensive
                 skipped_no_data.append(ticker)
+                skip_reasons["error"] += 1
                 continue
             if result.expected_move_pct is None:
                 skipped_rejected_move.append(ticker)
+                skip_reasons["rejected_move"] += 1
                 continue
 
             iv_rank, source = await _resolve_iv_rank(db, ticker, result)
@@ -657,19 +662,21 @@ async def refresh_iv_snapshots(
         )
 
     logger.info(
-        "refresh-snapshots: gate %d/%d passed (+%d tagged), wrote %d, no-data %d, rejected %d",
+        "refresh-snapshots: gate %d/%d passed (+%d tagged), wrote %d, no-data %d, rejected %d, reasons %s",
         gate_counts["passed_gate"],
         gate_counts["evaluated"],
         len(tagged),
         written,
         len(skipped_no_data),
         len(skipped_rejected_move),
+        dict(skip_reasons),
     )
     return IVSnapshotRefreshSummary(
         snapshot_date=today,
         written=written,
         skipped_no_data=skipped_no_data,
         skipped_rejected_move=skipped_rejected_move,
+        skip_reasons=dict(skip_reasons),
         **gate_counts,
     )
 

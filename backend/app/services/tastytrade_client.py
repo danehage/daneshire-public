@@ -65,6 +65,17 @@ class TastytradeUnavailable(TastytradeError):
     """No usable options data for this ticker (no chain, no quotes, stale)."""
 
 
+class TastytradeStaleQuote(TastytradeUnavailable):
+    """ATM straddle has no two-sided quote and no fresh last trade (ADR-0003).
+
+    Typical after the close for less-liquid names (#77).
+    """
+
+
+class TastytradeRateLimited(TastytradeUnavailable):
+    """Still 429 after exhausting the client's backoff retries."""
+
+
 # Refresh the access token this many seconds before its declared expiry.
 # Guards against clock skew and in-flight requests racing the expiry.
 _REFRESH_LEEWAY_SECONDS = 60
@@ -195,6 +206,8 @@ class TastytradeClient:
                     )
                     await _sleep(delay)
                     continue
+                if resp.status_code == 429:
+                    raise TastytradeRateLimited(f"HTTP 429 on {path} after retries")
                 if resp.status_code == 404:
                     raise TastytradeUnavailable(f"no data for {path}")
                 if resp.status_code != 200:
@@ -307,7 +320,7 @@ class TastytradeClient:
         call_mid = _quote_mid_or_last(atm.call)
         put_mid = _quote_mid_or_last(atm.put)
         if call_mid is None or put_mid is None:
-            raise TastytradeUnavailable(
+            raise TastytradeStaleQuote(
                 f"stale or zero straddle quotes for {symbol} @ {front_expiry}"
             )
         expected_move_pct = (Decimal(call_mid) + Decimal(put_mid)) / Decimal(underlying_quote.price)

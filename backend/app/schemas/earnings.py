@@ -46,6 +46,9 @@ class IVSnapshotRefreshSummary(BaseModel):
     written: int
     skipped_no_data: list[str]
     skipped_rejected_move: list[str]
+    # Count of skipped tickers per cause (#77): stale_quote, rate_limited,
+    # no_data, not_configured, error, rejected_move.
+    skip_reasons: dict[str, int] = {}
     # Stage-1 liquidity gate (#65). Tag-override tickers are not evaluated,
     # so evaluated == passed_gate + failed_gate. Quote errors count as failed.
     evaluated: int = 0

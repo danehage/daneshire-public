@@ -284,11 +284,14 @@ gcloud scheduler jobs create http earnings-refresh-calendar \
   --attempt-deadline 120s
 ```
 
-### IV snapshots (4:30 PM ET, weekdays)
+### IV snapshots (3:45 PM ET, weekdays)
 
 Writes one IV snapshot per `earnings-candidate`-tagged watchlist ticker
-into `iv_snapshots`. Runs 30 minutes after market close so end-of-day IV
-is settled.
+into `iv_snapshots`. Runs at 15:45 ET, 15 minutes *before* the close:
+after the bell, less-liquid names lose their two-sided quotes and fail
+ADR-0003's staleness guard (#77). This also matches the T-1 entry
+decision, which is made before the close. On half-days (1 PM close) the
+run is after-hours; the summary's `skip_reasons.stale_quote` shows it.
 
 **Tastytrade API call volume.** The only job that hits tastytrade is
 this one. Per ticker per run it fetches the front-week options chain
@@ -306,7 +309,7 @@ watchlist items carry the `earnings-candidate` tag.
 ```bash
 gcloud scheduler jobs create http earnings-refresh-snapshots \
   --location us-central1 \
-  --schedule "30 16 * * 1-5" \
+  --schedule "45 15 * * 1-5" \
   --time-zone "America/New_York" \
   --uri "${SERVICE_URL}/api/internal/earnings/refresh-snapshots" \
   --http-method POST \

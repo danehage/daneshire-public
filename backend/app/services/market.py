@@ -30,6 +30,11 @@ from app.schemas.iv import IVSnapshotRaw
 from app.schemas.market import HistoryBar, HistoryFrame, PriceQuote, TechnicalAnalysis
 from app.services.fmp_client import FMPClient
 from app.services.scanner import StockScanner
+from app.services.tastytrade_client import (
+    TastytradeRateLimited,
+    TastytradeStaleQuote,
+    TastytradeUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +82,15 @@ class OptionsDataUnavailable(MarketDataError):
 
     Causes: missing chain, missing underlying quote, no front-week
     expiry, stale/zero straddle quotes, or no remember-token provisioned.
+
+    ``reason`` buckets the cause for refresh summaries (#77): one of
+    ``stale_quote``, ``rate_limited``, ``no_data``, ``not_configured``,
+    ``error``.
     """
+
+    def __init__(self, ticker: str, message: str = "", reason: str = "no_data"):
+        super().__init__(ticker, message)
+        self.reason = reason
 
 
 # ---------------------------------------------------------------------------
@@ -432,13 +445,20 @@ class MarketData:
             raise OptionsDataUnavailable(
                 ticker,
                 "TastytradeClient not configured — set TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REFRESH_TOKEN",
+                reason="not_configured",
             )
         try:
             return await self._tastytrade.get_iv_snapshot(ticker)
         except MarketDataError:
             raise
+        except TastytradeStaleQuote as exc:
+            raise OptionsDataUnavailable(ticker, str(exc), reason="stale_quote") from exc
+        except TastytradeRateLimited as exc:
+            raise OptionsDataUnavailable(ticker, str(exc), reason="rate_limited") from exc
+        except TastytradeUnavailable as exc:
+            raise OptionsDataUnavailable(ticker, str(exc), reason="no_data") from exc
         except Exception as exc:  # noqa: BLE001
-            raise OptionsDataUnavailable(ticker, str(exc)) from exc
+            raise OptionsDataUnavailable(ticker, str(exc), reason="error") from exc
 
     async def iv_snapshots(
         self, tickers: list[str]

@@ -17,6 +17,8 @@ import pytest
 from app.services.tastytrade_client import (
     TastytradeAuthError,
     TastytradeClient,
+    TastytradeRateLimited,
+    TastytradeStaleQuote,
     TastytradeUnavailable,
     _pick_atm_strike,
     _quote_mid_or_last,
@@ -344,7 +346,7 @@ class TestRateLimitHandling:
 
         client = _make_client(lambda r: self._token_or(r, respond))
         try:
-            with pytest.raises(TastytradeUnavailable):
+            with pytest.raises(TastytradeRateLimited):
                 await client._authed_get("/market-metrics")
             # initial + _RATE_LIMIT_MAX_RETRIES attempts
             assert calls["n"] == 4
@@ -539,42 +541,12 @@ class TestGetIvSnapshotEndToEnd:
         """End-to-end check: market-data + market-metrics + nested chain +
         per-leg market-data are wired together correctly and
         ``IVSnapshotRaw`` carries the expected fields."""
-        front = date.today() + timedelta(days=7)
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/oauth/token":
-                return _token_response()
-            if request.url.path == "/market-data/by-type":
-                if request.url.params.get("equity") == "AAPL":
-                    return _market_data_response(
-                        [{"symbol": "AAPL", "last": "100.00", "mid": "100.05"}]
-                    )
-                # equity-option batch for the strike legs
-                return _market_data_response(
-                    [
-                        {"symbol": "AAPL-C100", "bid": "2.00", "ask": "2.20"},
-                        {"symbol": "AAPL-P100", "bid": "1.80", "ask": "2.00"},
-                    ]
-                )
-            if request.url.path == "/market-metrics":
-                return _market_metrics_response(
-                    [
-                        {
-                            "symbol": "AAPL",
-                            "implied-volatility-index": "0.30",
-                            "implied-volatility-index-rank": "0.45",
-                        }
-                    ]
-                )
-            if request.url.path == "/option-chains/AAPL/nested":
-                return _nested_chain_response(
-                    {
-                        front.isoformat(): [
-                            {"strike-price": "100.0", "call": "AAPL-C100", "put": "AAPL-P100"}
-                        ]
-                    }
-                )
-            return httpx.Response(404)
+        handler = _iv_snapshot_handler(
+            [
+                {"symbol": "AAPL-C100", "bid": "2.00", "ask": "2.20"},
+                {"symbol": "AAPL-P100", "bid": "1.80", "ask": "2.00"},
+            ]
+        )
 
         client = _make_client(handler)
         try:
@@ -586,3 +558,60 @@ class TestGetIvSnapshotEndToEnd:
             assert snap.expected_move_pct == pytest.approx(Decimal("0.04"))
         finally:
             await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_get_iv_snapshot_raises_stale_quote_after_close(self):
+        """No two-sided quote and a 20-min-old last trade: the after-hours
+        illiquid-name case from #77. Must surface as TastytradeStaleQuote so
+        the refresh summary can count it separately."""
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        handler = _iv_snapshot_handler(
+            [
+                {"symbol": "AAPL-C100", "bid": "0", "ask": "0", "last": "2.10", "updated-at": stale_ts},
+                {"symbol": "AAPL-P100", "bid": "1.80", "ask": "2.00"},
+            ]
+        )
+        client = _make_client(handler)
+        try:
+            with pytest.raises(TastytradeStaleQuote):
+                await client.get_iv_snapshot("AAPL")
+        finally:
+            await client.aclose()
+
+
+def _iv_snapshot_handler(option_rows: list[dict]):
+    """Mock transport for ``get_iv_snapshot``: AAPL at 100.00, one front-week
+    strike at 100, with ``option_rows`` as the equity-option leg quotes."""
+    front = date.today() + timedelta(days=7)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return _token_response()
+        if request.url.path == "/market-data/by-type":
+            if request.url.params.get("equity") == "AAPL":
+                return _market_data_response(
+                    [{"symbol": "AAPL", "last": "100.00", "mid": "100.05"}]
+                )
+            # equity-option batch for the strike legs
+            return _market_data_response(option_rows)
+        if request.url.path == "/market-metrics":
+            return _market_metrics_response(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "implied-volatility-index": "0.30",
+                        "implied-volatility-index-rank": "0.45",
+                    }
+                ]
+            )
+        if request.url.path == "/option-chains/AAPL/nested":
+            return _nested_chain_response(
+                {
+                    front.isoformat(): [
+                        {"strike-price": "100.0", "call": "AAPL-C100", "put": "AAPL-P100"}
+                    ]
+                }
+            )
+        return httpx.Response(404)
+
+    return handler

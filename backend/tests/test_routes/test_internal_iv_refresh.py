@@ -272,6 +272,42 @@ async def test_skips_tickers_with_no_data(client: AsyncClient, db_session: Async
     assert body["written"] == 1
     assert body["skipped_no_data"] == ["BUST"]
     assert body["skipped_rejected_move"] == []
+    assert body["skip_reasons"] == {"no_data": 1}
+
+
+@pytest.mark.asyncio
+async def test_skip_reasons_bucket_causes(client: AsyncClient, db_session: AsyncSession):
+    """#77: the summary counts why each ticker was skipped, so an
+    after-hours stale-quote wave is visible from one log line."""
+    for t in ("AAPL", "ILLQ", "THRT", "GONE", "NOEM"):
+        await _add_watchlist(db_session, t)
+
+    _override_market(
+        {
+            "AAPL": _snapshot("AAPL"),
+            "ILLQ": OptionsDataUnavailable("ILLQ", "stale straddle", reason="stale_quote"),
+            "THRT": OptionsDataUnavailable("THRT", "429", reason="rate_limited"),
+            "GONE": UpstreamError("GONE"),
+            "NOEM": IVSnapshotRaw(
+                ticker="NOEM",
+                iv30=Decimal("0.40"),
+                iv_rank_provider=Decimal("70"),
+                expected_move_pct=None,
+            ),
+        }
+    )
+
+    response = await client.post(
+        "/api/internal/earnings/refresh-snapshots", headers=auth_headers()
+    )
+    body = response.json()
+    assert body["written"] == 1
+    assert body["skip_reasons"] == {
+        "stale_quote": 1,
+        "rate_limited": 1,
+        "error": 1,
+        "rejected_move": 1,
+    }
 
 
 @pytest.mark.asyncio

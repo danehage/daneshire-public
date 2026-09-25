@@ -22,6 +22,11 @@ from app.services.market import (
     OptionsDataUnavailable,
     TickerNotFound,
 )
+from app.services.tastytrade_client import (
+    TastytradeRateLimited,
+    TastytradeStaleQuote,
+    TastytradeUnavailable,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +113,28 @@ class TestIVSnapshotSingle:
         with pytest.raises(OptionsDataUnavailable) as exc:
             await market.iv_snapshot("AAPL")
         assert exc.value.ticker == "AAPL"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [
+            (TastytradeStaleQuote("stale straddle"), "stale_quote"),
+            (TastytradeRateLimited("429"), "rate_limited"),
+            (TastytradeUnavailable("no chain"), "no_data"),
+            (RuntimeError("boom"), "error"),
+        ],
+    )
+    async def test_client_errors_map_to_skip_reason(self, error, reason):
+        market = _market(_FakeTastytrade({"AAPL": error}))
+        with pytest.raises(OptionsDataUnavailable) as exc:
+            await market.iv_snapshot("AAPL")
+        assert exc.value.reason == reason
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_client_reason(self):
+        with pytest.raises(OptionsDataUnavailable) as exc:
+            await _market(None).iv_snapshot("AAPL")
+        assert exc.value.reason == "not_configured"
 
     @pytest.mark.asyncio
     async def test_raises_on_client_error(self):

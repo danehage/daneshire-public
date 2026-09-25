@@ -11,7 +11,7 @@ All recurring earnings-module work goes through `/api/internal/earnings/*` endpo
 Specifically:
 
 - `POST /api/internal/earnings/refresh-calendar` — daily 22:00 ET
-- `POST /api/internal/earnings/refresh-snapshots` — daily 16:30 ET (after market close)
+- `POST /api/internal/earnings/refresh-snapshots` — daily 15:45 ET (before the close: after-hours, illiquid names have no two-sided quote and fail ADR-0003's staleness guard — #77)
 - `POST /api/internal/alerts/run-earnings-checks` — daily 17:00 ET (after snapshots)
 - `POST /api/internal/earnings/backfill-realized-moves` — manual/one-shot, same auth
 
