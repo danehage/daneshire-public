@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+import logging
 import os
 import secrets
 import time
@@ -17,6 +18,25 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.database import get_db
+
+
+def _configure_app_logging() -> None:
+    """Send the app's own INFO logs to stderr (Cloud Logging picks it up).
+
+    Without this, every ``logger.info`` under ``app.*`` is dropped: nothing
+    configures the root logger, so Python's WARNING default applies. Scoped
+    to ``app`` on purpose: a root INFO config would also enable httpx's
+    per-request lines, which include FMP URLs carrying ``apikey=``.
+    """
+    app_logger = logging.getLogger("app")
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        app_logger.addHandler(handler)
+    app_logger.setLevel(logging.INFO)
+
+
+_configure_app_logging()
 
 
 class FailureThrottle:
