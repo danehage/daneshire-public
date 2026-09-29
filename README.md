@@ -9,7 +9,7 @@ Two auth roles: the **owner** credentials unlock everything; optional **guest** 
 ## Features
 
 - **Dashboard** — Summary cards, recent activity feed, journal search, quick actions
-- **Watchlist** — Track tickers with drag-and-drop reordering, status tabs (Watching/Open/Closed)
+- **Watchlist** — Track tickers with drag-and-drop reordering, status tabs (Watching/Owned/Open/Closed). Portfolio holdings merge in automatically as Owned
 - **Price Targets** — Set entry/exit targets per ticker
 - **Journal** — Trade notes with type badges (thesis, entry, exit, adjustment, review), standalone `/journal` page, and full-text search
 - **Scanner** — Find stocks meeting technical criteria across selectable universes (S&P 500 + S&P 400 combined by default, ~900 stocks, $20 price floor), with real-time SSE progress and progressive score-sorted results mid-scan. Two-track scoring favors stabilization over damage
@@ -19,6 +19,7 @@ Two auth roles: the **owner** credentials unlock everything; optional **guest** 
 - **Earnings Calendar** — Upcoming earnings dates from Finnhub with sortable views, date filtering, expected-move calculations (Tastytrade IV), and an earnings trade journal
 - **Alerts** — Price and technical condition alerts with Pushover notifications
 - **Alert Engine** — Cloud Scheduler jobs: price/technical checks every 15 min, hourly sell-side plateau grading, daily earnings and reminder runs
+- **Backups** — nightly `pg_dump` of the production database to GCS
 
 ## Tech Stack
 
@@ -61,8 +62,12 @@ python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 
-# Create .env at the repo root (see .env.example for the full template)
-cat > ../.env << EOF
+# Create backend/.env (see .env.example at the repo root for the full template).
+# Settings load .env from the working directory, so a bare `uvicorn` run from
+# backend/ reads backend/.env; docker-compose reads the repo-root .env instead.
+# Point NEON_DATABASE_URL at a dev/test branch, never production: the test
+# suite's cleanup fixtures delete rows (tests/conftest.py blocks the prod endpoint).
+cat > .env << EOF
 NEON_DATABASE_URL=postgresql+asyncpg://user:pass@host/db?ssl=require
 FMP_API_KEY=your_fmp_key
 FINNHUB_API_KEY=your_finnhub_key
@@ -104,35 +109,27 @@ cd backend
 pytest tests/ -v
 ```
 
-~420 tests covering:
+~550 tests covering:
 - Watchlist, journal, alerts CRUD
 - Alert condition evaluator
 - Internal scheduler endpoints (price/technical/reminder/expire/plateau)
 - Portfolio engine + live mark math, trades + layered compute, value history, plateau grades
 - Snapshot parse endpoint (FakeVisionParser): diff classification, error mapping, parse→commit round trip, short positions
-- Earnings calendar + earnings trade journal
-- Market seam: Finnhub client, Tastytrade client, IV / realized-move calculations
+- Earnings calendar + earnings trade journal, calendar date-drift handling and duplicate-event merge
+- Market seam: Finnhub client, Tastytrade client, IV / realized-move calculations, IV-snapshot skip reasons
 - Scanner universes + two-track rescore
 - Vault trade-campaign sync (frontmatter parsing, upsert/archive, watchlist linkage)
 - Guest-role auth gating
 
+**CI:** GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `master`. It runs the backend suite against a service-container Postgres, the frontend build, and an advisory dependency audit. CI runs alongside the deploy but doesn't gate it.
+
 ## Production Deployment
 
-See [DEPLOY.md](DEPLOY.md) for full GCP deployment instructions.
+**Push to `master` to deploy.** A Cloud Build trigger runs [`cloudbuild.yaml`](cloudbuild.yaml), which builds the image, applies Alembic migrations, and deploys to Cloud Run. The deploy step pins the dedicated runtime service account and the full Secret Manager `--set-secrets` list. Don't hand-run `gcloud run deploy`: it would drop that configuration.
 
-### Quick Deploy
+See [DEPLOY.md](DEPLOY.md) for first-time GCP setup (secrets, service accounts, Cloud Scheduler jobs).
 
-```bash
-# Build and push
-gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT/danecast/danecast-trades
-
-# Deploy
-gcloud run deploy danecast-trades \
-  --image us-central1-docker.pkg.dev/PROJECT/danecast/danecast-trades \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-secrets "NEON_DATABASE_URL=neon-database-url:latest,AUTH_USERNAME=auth-username:latest,AUTH_PASSWORD=auth-password:latest,..."
-```
+The production image installs from `backend/requirements.lock` (hash-pinned, `--require-hashes`). `requirements.txt` stays the source of truth for direct dependencies; regenerate the lockfile when it changes.
 
 Production requires HTTP Basic Auth credentials (configured via `AUTH_USERNAME` and `AUTH_PASSWORD` secrets).
 
@@ -158,11 +155,17 @@ daneshire/
 │   │   ├── hooks/            # React Query hooks
 │   │   └── pages/            # Route pages
 │   └── package.json
+├── docs/adr/                 # Architecture decision records
+├── legacy/                   # v1 codebase (scanner/indicators source)
+├── .github/workflows/ci.yml  # GitHub Actions CI
 ├── Dockerfile                # Production multi-stage build
-├── cloudbuild.yaml           # GCP Cloud Build CI/CD
+├── cloudbuild.yaml           # Cloud Build: build, migrate, deploy on push to master
 ├── DEPLOY.md                 # Deployment guide
 ├── ARCHITECTURE.md           # Database schema & API design
-└── TODO.md                   # Build progress tracking
+├── CONTEXT.md                # Domain glossary
+├── PRINCIPLES.md             # Investment analysis lens
+├── TODO.md                   # Current status + latest session log
+└── TODO_ARCHIVE.md           # Past session logs
 ```
 
 ## API Endpoints
@@ -170,6 +173,8 @@ daneshire/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/health` | Health check |
+| GET | `/api/health/db` | Database connectivity check |
+| GET | `/api/me` | Current user's role (owner / guest) |
 | GET | `/api/dashboard/summary` | Dashboard stats |
 | GET/POST | `/api/watchlist` | List/create watchlist items |
 | GET/PATCH/DELETE | `/api/watchlist/{id}` | Get/update/delete item |
@@ -186,7 +191,10 @@ daneshire/
 | GET | `/api/ticker/{symbol}/context` | Fundamentals context block |
 | GET | `/api/ticker/{symbol}/context/narrative` | Gemini-generated narrative |
 | GET/POST | `/api/alerts` | List/create alerts |
+| GET/PATCH/DELETE | `/api/alerts/{id}` | Get/update/delete alert |
 | POST | `/api/alerts/{id}/dismiss` | Dismiss alert |
+| GET | `/api/alerts/{id}/history` | Evaluation history for an alert |
+| POST | `/api/alerts/evaluate` | Run the alert engine on demand (one type or all) |
 | GET | `/api/portfolio` | Positions, live marks, day change, cash (all accounts aggregated, or `?account_id=`) |
 | GET | `/api/portfolio/accounts` | List brokerage accounts |
 | POST | `/api/portfolio/snapshots/parse` | Parse portfolio screenshot via Gemini (stateless) |
@@ -200,6 +208,7 @@ daneshire/
 | POST | `/api/trade-campaigns/sync` | One-way vault sync (upsert + soft-archive) |
 | GET | `/api/earnings/calendar` | Upcoming earnings (date range) |
 | GET | `/api/earnings/screen` | Earnings screen with IV / expected-move data |
+| GET | `/api/earnings/{ticker}` | Per-ticker earnings view (next event, latest IV, realized moves, edge ratio, recent trades) |
 | GET | `/api/earnings/{ticker}/expected-move` | Expected move for an upcoming event |
 | GET/POST | `/api/earnings/trades` | Earnings trade journal |
 
@@ -215,7 +224,7 @@ Cloud Scheduler drives all background work via `/api/internal/*` endpoints (auth
 | Reminders | 8 AM daily | Send date reminders |
 | Expire stale | Midnight daily | Mark expired alerts |
 | Earnings calendar refresh | 10 PM daily | Upsert 4-week earnings calendar from Finnhub |
-| IV snapshots | 4:30 PM ET Mon-Fri | Snapshot options IV from Tastytrade for upcoming earnings |
+| IV snapshots | 3:45 PM ET Mon-Fri | Snapshot options IV from Tastytrade for upcoming earnings (before the close, so illiquid names still have two-sided quotes) |
 | Earnings alert checks | 5 PM ET Mon-Fri | Evaluate earnings alerts |
 | DB backup | 2 AM daily | `pg_dump` of the Neon database uploaded to GCS |
 
