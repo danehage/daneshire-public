@@ -4,7 +4,10 @@ Regression tests for earnings date-drift handling (#75).
 Covers:
 - Simple drift: a moved date updates the existing future row in place.
 - Drift onto an existing duplicate (already-created pair): merges them.
-- Past-event immutability: past events are never modified by drift handling.
+- Past-event immutability: reported past events (realized move set, or
+  outside the ±14-day window) are never modified by drift handling.
+- Date slipped into the past: an unrealized past row inside the window is
+  moved, not duplicated.
 - Null fiscal_period: falls back to ±14-day window.
 - Trade FK preservation: linked trades survive a drift update intact.
 - merge-duplicate-events endpoint: merges stale pairs (including fully-past
@@ -341,6 +344,139 @@ async def test_past_event_not_modified_by_drift(
     count = await _event_count(db_session, "AAPL")
     assert count >= 1
     assert past_event.report_date == past_date
+
+
+@pytest.mark.asyncio
+async def test_drift_moves_unrealized_past_row(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Q3 row dated yesterday; Finnhub now says Q3 is next week. The stale
+    row never reported (no realized move), so it is moved in place rather
+    than leaving a phantom past Q3 row next to a fresh future one."""
+    old_date = TODAY - timedelta(days=1)
+    new_date = TODAY + timedelta(days=6)
+
+    event_id = await _insert_event(db_session, "AAPL", old_date, fiscal_period="Q3 2026")
+    trade_id = await _insert_trade(db_session, event_id)
+
+    _set_market(_FakeMarket([_raw_event("AAPL", new_date, year=2026, quarter=3)]))
+    try:
+        resp = await client.post(
+            "/api/internal/earnings/refresh-calendar", headers=auth_headers()
+        )
+    finally:
+        _clear_market()
+
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    assert await _event_count(db_session, "AAPL") == 1
+
+    event = await _fetch_event(db_session, event_id)
+    assert event is not None
+    assert event.report_date == new_date
+
+    trade = await _fetch_trade(db_session, trade_id)
+    assert trade is not None
+    assert trade.earnings_event_id == event_id
+
+
+@pytest.mark.asyncio
+async def test_drift_moves_unrealized_past_row_null_fiscal_period(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Same as above with no fiscal_period on either side: the ±14-day
+    window plus the missing realized move identify the slipped event."""
+    old_date = TODAY - timedelta(days=3)
+    new_date = TODAY + timedelta(days=4)
+
+    event_id = await _insert_event(db_session, "MSFT", old_date, fiscal_period=None)
+
+    _set_market(_FakeMarket([_raw_event("MSFT", new_date)]))
+    try:
+        resp = await client.post(
+            "/api/internal/earnings/refresh-calendar", headers=auth_headers()
+        )
+    finally:
+        _clear_market()
+
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    assert await _event_count(db_session, "MSFT") == 1
+
+    event = await _fetch_event(db_session, event_id)
+    assert event is not None
+    assert event.report_date == new_date
+
+
+@pytest.mark.asyncio
+async def test_drift_leaves_realized_past_row_alone(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A past row that already has a realized move is a reported quarter:
+    it is never moved, and the incoming event gets its own row."""
+    from decimal import Decimal
+
+    old_date = TODAY - timedelta(days=1)
+    new_date = TODAY + timedelta(days=6)
+
+    event_id = await _insert_event(
+        db_session,
+        "AAPL",
+        old_date,
+        fiscal_period="Q3 2026",
+        realized_move_pct=Decimal("0.05"),
+    )
+
+    _set_market(_FakeMarket([_raw_event("AAPL", new_date, year=2026, quarter=3)]))
+    try:
+        resp = await client.post(
+            "/api/internal/earnings/refresh-calendar", headers=auth_headers()
+        )
+    finally:
+        _clear_market()
+
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    assert await _event_count(db_session, "AAPL") == 2
+
+    past_event = await _fetch_event(db_session, event_id)
+    assert past_event is not None
+    assert past_event.report_date == old_date
+    assert past_event.realized_move_pct == Decimal("0.05")
+
+
+@pytest.mark.asyncio
+async def test_drift_leaves_unrealized_past_row_of_other_quarter_alone(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """An unrealized past row inside the window but for a different
+    fiscal_period is a different event (e.g. the backfill hasn't run yet):
+    it must not be merged into the incoming quarter."""
+    old_date = TODAY - timedelta(days=2)
+    new_date = TODAY + timedelta(days=5)
+
+    event_id = await _insert_event(db_session, "AAPL", old_date, fiscal_period="Q2 2026")
+
+    _set_market(_FakeMarket([_raw_event("AAPL", new_date, year=2026, quarter=3)]))
+    try:
+        resp = await client.post(
+            "/api/internal/earnings/refresh-calendar", headers=auth_headers()
+        )
+    finally:
+        _clear_market()
+
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    assert await _event_count(db_session, "AAPL") == 2
+
+    past_event = await _fetch_event(db_session, event_id)
+    assert past_event is not None
+    assert past_event.report_date == old_date
+    assert past_event.fiscal_period == "Q2 2026"
 
 
 # ---------------------------------------------------------------------------

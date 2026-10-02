@@ -142,55 +142,74 @@ async def _find_drifted_row(
     incoming_date: date,
     fiscal_period: Optional[str],
 ) -> Optional[EarningsEvent]:
-    """Return an existing future row that represents the same event at a different date.
+    """Return an existing row that represents the same event at a different date.
 
-    Matching rules (issue #75):
-    - Both non-null, same fiscal_period → exact match.
+    Identity rules (issue #75):
+    - Both non-null, same fiscal_period → same event.
     - Either side's fiscal_period is null → report_date within ±14 days of
       the incoming date (but not equal, since equal = same row via the
       ON CONFLICT path).
-    Only future rows (report_date >= today) are considered; past events are
-    immutable.
+
+    Eligibility:
+    - Future rows (report_date >= today) are always eligible.
+    - Past rows are eligible only while unrealized — ``realized_move_pct``
+      IS NULL — and only within ±14 days of the incoming date, even when
+      fiscal_period matches. This is the "date slipped into the past"
+      case: a Q3 row dated 10-01 that Finnhub moves to 10-08 on 10-02.
+      Without it the stale 10-01 row was ignored, a second Q3 row was
+      inserted, and the phantom past row (never reported on that date,
+      so never given a realized move) lingered as a duplicate. A past row
+      that already carries a realized move is a reported quarter and is
+      never touched: those stay immutable.
+
+    When several rows qualify, prefer future rows, then an exact
+    fiscal_period match, then the nearest date.
     """
     from sqlalchemy import or_, and_
 
     today = date.today()
     low = incoming_date - timedelta(days=_DRIFT_WINDOW_DAYS)
     high = incoming_date + timedelta(days=_DRIFT_WINDOW_DAYS)
+    in_window = and_(
+        EarningsEvent.report_date >= low,
+        EarningsEvent.report_date <= high,
+    )
+
+    eligible = or_(
+        EarningsEvent.report_date >= today,
+        and_(in_window, EarningsEvent.realized_move_pct.is_(None)),
+    )
 
     if fiscal_period is not None:
-        # Match by exact fiscal_period OR by ±14-day window when the existing
-        # row has null fiscal_period (brief: "either side's fiscal_period is null").
-        stmt = (
-            select(EarningsEvent)
-            .where(EarningsEvent.ticker == ticker)
-            .where(EarningsEvent.report_date != incoming_date)
-            .where(EarningsEvent.report_date >= today)
-            .where(
-                or_(
-                    EarningsEvent.fiscal_period == fiscal_period,
-                    and_(
-                        EarningsEvent.fiscal_period.is_(None),
-                        EarningsEvent.report_date >= low,
-                        EarningsEvent.report_date <= high,
-                    ),
-                )
-            )
-            .limit(1)
+        # Exact fiscal_period match, OR ±14-day window when the existing
+        # row's fiscal_period is null ("either side's fiscal_period is null").
+        same_event = or_(
+            EarningsEvent.fiscal_period == fiscal_period,
+            and_(EarningsEvent.fiscal_period.is_(None), in_window),
         )
     else:
         # Incoming fiscal_period is null → ±14-day window regardless of existing.
-        stmt = (
-            select(EarningsEvent)
-            .where(EarningsEvent.ticker == ticker)
-            .where(EarningsEvent.report_date >= low)
-            .where(EarningsEvent.report_date <= high)
-            .where(EarningsEvent.report_date != incoming_date)
-            .where(EarningsEvent.report_date >= today)
-            .limit(1)
+        same_event = in_window
+
+    stmt = (
+        select(EarningsEvent)
+        .where(EarningsEvent.ticker == ticker)
+        .where(EarningsEvent.report_date != incoming_date)
+        .where(eligible)
+        .where(same_event)
+    )
+    candidates = list((await db.execute(stmt)).scalars().all())
+    if not candidates:
+        return None
+
+    def _rank(row: EarningsEvent) -> tuple:
+        return (
+            row.report_date < today,  # future rows first
+            not (fiscal_period is not None and row.fiscal_period == fiscal_period),
+            abs((row.report_date - incoming_date).days),
         )
 
-    return (await db.execute(stmt)).scalars().first()
+    return min(candidates, key=_rank)
 
 
 async def _merge_events(
@@ -230,12 +249,14 @@ async def _upsert_finnhub_events(
     touches it.
 
     Drift handling (#75): before the plain upsert, looks for an existing
-    future row that represents the same event at a different date
-    (matched by fiscal_period or ±14-day window). If found:
+    row that represents the same event at a different date (matched by
+    fiscal_period or ±14-day window; future rows, or past rows within the
+    window that have no realized move yet — see ``_find_drifted_row``).
+    If found:
     - Updates its report_date in place (preserving its id and trade FKs).
     - If there is already a row at the incoming date, merges the two
       (repoints trades, deletes the loser).
-    - Past events are never modified.
+    - Reported past events (realized_move_pct set) are never modified.
 
     Does not commit.
     """
@@ -266,7 +287,8 @@ async def _upsert_finnhub_events(
         # --- Drift detection -------------------------------------------
         drifted = await _find_drifted_row(db, symbol, incoming_date, fiscal_period)
         if drifted is not None:
-            # Existing row is a future event at a different date: move it.
+            # Existing row is the same event at a different date (future, or
+            # a past date it never actually reported on): move it.
             old_date = drifted.report_date
             logger.info(
                 "refresh-calendar: %s %s date drifted %s → %s",
