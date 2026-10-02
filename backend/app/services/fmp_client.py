@@ -9,7 +9,7 @@ import os
 from datetime import datetime, date
 from typing import Optional
 
-from urllib.parse import quote as urlquote
+from urllib.parse import parse_qs, quote as urlquote, urlsplit
 from dataclasses import dataclass
 
 import httpx
@@ -35,6 +35,41 @@ class RequestFailure:
     def is_permanent(self) -> bool:
         """A client error that will not resolve by retrying this run."""
         return self.status is not None and 400 <= self.status < 500 and self.status != 429
+
+    def is_no_data(self) -> bool:
+        """A per-symbol "nothing here" answer rather than an outage.
+
+        Logged at debug: an unknown ticker is expected noise, whereas
+        401/403/429/5xx and network errors mean every call is failing.
+        """
+        return self.status == 404
+
+
+class FMPRequestError(Exception):
+    """An FMP request failed for a reason other than "no data for symbol".
+
+    Raised (rather than returning ``None``) where the caller must tell an
+    outage apart from an unknown ticker — see ``get_company_profile``.
+    """
+
+    def __init__(self, failure: RequestFailure, endpoint: str = ""):
+        self.failure = failure
+        where = f"{endpoint}: " if endpoint else ""
+        super().__init__(f"FMP {where}{failure.describe()}")
+
+
+def _describe_request(url: str) -> str:
+    """Path + symbol(s) of an FMP URL, never the query string.
+
+    Every FMP URL carries ``apikey=`` in its query, so URLs must not be
+    logged verbatim.
+    """
+    parts = urlsplit(url)
+    query = parse_qs(parts.query)
+    symbol = (query.get("symbol") or query.get("symbols") or [""])[0]
+    if len(symbol) > 60:
+        symbol = symbol[:60] + "..."
+    return f"{parts.path} symbol={symbol}" if symbol else parts.path
 
 
 class FMPClient:
@@ -108,24 +143,50 @@ class FMPClient:
                 else:
                     body = ""
                     try:
-                        body = response.text[:200]
+                        body = self._redact(response.text[:200])
                     except Exception:  # pragma: no cover - defensive
                         pass
-                    self.last_failure = RequestFailure(response.status_code, body)
-                    logger.debug(
-                        f"Request failed with status {response.status_code}: {body}"
+                    failure = RequestFailure(response.status_code, body)
+                    self.last_failure = failure
+                    # A 404 for one symbol is expected noise; anything else
+                    # (401/403 bad key, 402 plan, 5xx) means FMP is failing
+                    # for every call and must reach Cloud Logging, which
+                    # only receives INFO and above.
+                    log = logger.debug if failure.is_no_data() else logger.warning
+                    log(
+                        "FMP request failed (%s): HTTP %d %s",
+                        _describe_request(url),
+                        response.status_code,
+                        body,
                     )
                     return None
 
             except httpx.RequestError as e:
-                logger.debug(f"Request error: {e}")
-                self.last_failure = RequestFailure(None, str(e)[:200])
+                detail = self._redact(str(e)[:200]) or type(e).__name__
+                self.last_failure = RequestFailure(None, detail)
                 if attempt < retries:
+                    logger.debug(
+                        "FMP network error (%s), retrying: %s",
+                        _describe_request(url),
+                        detail,
+                    )
                     await asyncio.sleep(self.RETRY_DELAY)
                 else:
+                    logger.warning(
+                        "FMP network error (%s) after %d retries: %s",
+                        _describe_request(url),
+                        retries,
+                        detail,
+                    )
                     return None
 
         return None
+
+    def _redact(self, text: str) -> str:
+        """Strip the API key from text headed for the logs."""
+        if self.api_key and text:
+            return text.replace(self.api_key, "***")
+        return text
 
     def _get_hist_cache_path(self, ticker: str) -> str:
         """Get path for today's historical data cache.
@@ -173,11 +234,22 @@ class FMPClient:
                         return data
                 elif response.status_code == 429:
                     logger.warning(f"Rate limited on {ticker}")
+                elif response.status_code != 404:
+                    logger.warning(
+                        "FMP request failed (/stable/quote symbol=%s): HTTP %d %s",
+                        ticker,
+                        response.status_code,
+                        self._redact(response.text[:200]),
+                    )
 
                 return None
 
         except httpx.RequestError as e:
-            logger.debug(f"Error fetching quote for {ticker}: {e}")
+            logger.warning(
+                "FMP network error (/stable/quote symbol=%s): %s",
+                ticker,
+                self._redact(str(e)[:200]) or type(e).__name__,
+            )
             return None
 
     BATCH_QUOTE_CHUNK = 100
@@ -380,11 +452,21 @@ class FMPClient:
         Uses the /stable/ API — the /api/v3/ endpoints are legacy-gated
         (subscriptions before 2025-08-31 only) and return an error payload
         on this plan.
+
+        Returns ``None`` when FMP has no profile for the symbol, and raises
+        :class:`FMPRequestError` when the request itself failed (bad key,
+        5xx, network) so the ticker page can answer 502 instead of a
+        misleading "ticker not found" 404.
         """
         try:
             url = f"{self.BASE_URL}/stable/profile?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
+                # Read last_failure before any further await: it is shared
+                # client state and concurrent calls overwrite it.
+                failure = self.last_failure
+                if response is None and failure is not None and not failure.is_no_data():
+                    raise FMPRequestError(failure, "/stable/profile")
                 if response:
                     data = response.json()
                     if isinstance(data, list) and data:

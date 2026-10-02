@@ -87,13 +87,39 @@ async def verify_scheduler_secret(
         raise HTTPException(status_code=401, detail="Invalid scheduler secret")
 
 
+def _fail_if_upstream_outage(summary: RunSummary) -> RunSummary:
+    """Turn a provider-caused all-errored run into a 502 for Cloud Scheduler.
+
+    When FMP rejects the key, every price/technical evaluation errors, but
+    these endpoints used to answer 200 and the Scheduler console showed
+    green. Only provider failures count: a run whose sole alert is on a
+    delisted ticker also errors every time, but that is the alert's fault
+    and answers 200 (the engine logs it at WARNING) rather than failing
+    the job every 15 minutes.
+
+    The history rows are already committed by the engine (every evaluation
+    is logged to alert_history); this only changes what the scheduler is
+    told. The manual ``POST /api/alerts/evaluate`` keeps returning the
+    summary as-is — it is a debugging surface.
+    """
+    if summary.upstream_outage:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"alert-engine {summary.alert_type}: all {summary.errored} "
+                "evaluations errored; market data provider unavailable"
+            ),
+        )
+    return summary
+
+
 @router.post("/alerts/run-price-checks", response_model=RunSummary)
 async def run_price_checks(
     engine: AlertEngine = Depends(get_alert_engine),
     _: None = Depends(verify_scheduler_secret),
 ):
     """Evaluate all active ``price_cross`` alerts."""
-    return await engine.run("price_cross")
+    return _fail_if_upstream_outage(await engine.run("price_cross"))
 
 
 @router.post("/alerts/run-technical-checks", response_model=RunSummary)
@@ -102,7 +128,7 @@ async def run_technical_checks(
     _: None = Depends(verify_scheduler_secret),
 ):
     """Evaluate all active ``technical_signal`` alerts."""
-    return await engine.run("technical_signal")
+    return _fail_if_upstream_outage(await engine.run("technical_signal"))
 
 
 @router.post("/alerts/run-reminders", response_model=RunSummary)
@@ -111,7 +137,7 @@ async def run_reminders(
     _: None = Depends(verify_scheduler_secret),
 ):
     """Fire all ``date_reminder`` alerts whose trigger date is today."""
-    return await engine.run("date_reminder")
+    return _fail_if_upstream_outage(await engine.run("date_reminder"))
 
 
 @router.post("/alerts/run-earnings-checks", response_model=RunSummary)
@@ -120,7 +146,7 @@ async def run_earnings_checks(
     _: None = Depends(verify_scheduler_secret),
 ):
     """Evaluate all active ``earnings_iv`` alerts."""
-    return await engine.run("earnings_iv")
+    return _fail_if_upstream_outage(await engine.run("earnings_iv"))
 
 
 @router.post("/alerts/expire-stale")

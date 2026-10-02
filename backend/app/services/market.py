@@ -28,7 +28,7 @@ from fastapi import Request
 
 from app.schemas.iv import IVSnapshotRaw
 from app.schemas.market import HistoryBar, HistoryFrame, PriceQuote, TechnicalAnalysis
-from app.services.fmp_client import FMPClient
+from app.services.fmp_client import FMPClient, RequestFailure
 from app.services.scanner import StockScanner
 from app.services.tastytrade_client import (
     TastytradeRateLimited,
@@ -329,6 +329,12 @@ class MarketData:
             raw_map = {}
             batch_error = str(exc)
 
+        # The FMP client swallows HTTP failures and returns an empty map, so
+        # a revoked key would otherwise surface as TickerNotFound for every
+        # ticker — indistinguishable from delisted symbols.
+        if batch_error is None:
+            batch_error = self._upstream_failure()
+
         for s in misses:
             raw = raw_map.get(s)
             if raw:
@@ -382,7 +388,27 @@ class MarketData:
             *[self._gather_one(s, self.analysis, results) for s in unique],
             return_exceptions=False,
         )
+        # As in ``quotes``: a failed history fetch returns None, which
+        # reads as TickerNotFound. Reclassify when the provider failed.
+        failure = self._upstream_failure()
+        if failure is not None:
+            for s, value in results.items():
+                if isinstance(value, TickerNotFound):
+                    results[s] = UpstreamError(s, failure)
         return results
+
+    def _upstream_failure(self) -> Optional[str]:
+        """Describe the client's last request failure if it was the
+        provider's fault (bad key, 5xx, rate limit, network), else None.
+
+        A 404 / empty answer for one symbol is not an upstream failure.
+        ``last_failure`` is shared client state, so this is a heuristic for
+        batch calls: in an outage every request fails the same way.
+        """
+        failure = getattr(self.client, "last_failure", None)
+        if not isinstance(failure, RequestFailure) or failure.is_no_data():
+            return None
+        return failure.describe()
 
     # -- history ------------------------------------------------------------
 
@@ -554,6 +580,11 @@ class MarketData:
         # --- profile ---------------------------------------------------
         # The client methods already unwrap FMP's single-element list and
         # return a dict (or None / an exception via gather).
+        if isinstance(profile_raw, Exception):
+            # The profile request itself failed (bad key, 5xx, network) —
+            # an outage, not an unknown symbol. Surfacing it as
+            # TickerNotFound made an FMP outage look like bad input.
+            raise UpstreamError(ticker, str(profile_raw)) from profile_raw
         profile: dict = profile_raw if isinstance(profile_raw, dict) else {}
         if not profile:
             # No profile = FMP doesn't know the symbol. Raise instead of

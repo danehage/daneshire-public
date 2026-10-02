@@ -51,9 +51,14 @@ class Errored:
 
     Constructed only by the orchestrator — the pure evaluator's return
     type is narrowed to :class:`Met` | :class:`NotMet`.
+
+    ``upstream`` is True when the cause was a provider failure (FMP
+    outage, bad key, rate limit) rather than the alert itself (unknown
+    ticker, bad condition). Only upstream errors fail the cron run.
     """
 
     reason: str
+    upstream: bool = False
 
 
 EvalResult = Union[Met, NotMet]

@@ -176,3 +176,26 @@ async def test_get_earnings_calendar_network_error_returns_empty():
         )
 
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_non_200_logs_warning_without_token(caplog):
+    """A revoked key must reach Cloud Logging (INFO+), not debug."""
+    client = FinnhubClient(api_key="sekret-finnhub-token")
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(
+            return_value=httpx.Response(401, text='{"error":"Invalid API key"}')
+        )
+
+        with caplog.at_level("WARNING", logger="app.services.finnhub_client"):
+            events = await client.get_earnings_calendar(
+                date(2026, 6, 1), date(2026, 6, 2)
+            )
+
+    assert events == []
+    assert "HTTP 401" in caplog.text
+    assert "/api/v1/calendar/earnings" in caplog.text
+    assert "sekret-finnhub-token" not in caplog.text

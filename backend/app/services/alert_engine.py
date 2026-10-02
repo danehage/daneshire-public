@@ -45,7 +45,12 @@ from app.schemas.alert_conditions import (
 )
 from app.schemas.alert_runs import AlertOutcomeRecord, RunSummary
 from app.schemas.market import PriceQuote, TechnicalAnalysis
-from app.services.market import MarketData, MarketDataError
+from app.services.market import (
+    MarketData,
+    MarketDataError,
+    RateLimited,
+    UpstreamError,
+)
 from app.services.notifications import send_alert_notification
 
 logger = logging.getLogger(__name__)
@@ -163,7 +168,9 @@ class AlertEngine:
 
         alerts = await self.get_active_alerts(alert_type=alert_type)
         if not alerts:
-            return RunSummary(alert_type=alert_type)
+            summary = RunSummary(alert_type=alert_type)
+            _log_run_summary(summary, active=0)
+            return summary
 
         observations = await self._observations_for(alert_type, alerts)
 
@@ -180,6 +187,8 @@ class AlertEngine:
                 to_notify.append(record)
             else:
                 self.db.add(self._history_row(record))
+        # History is committed before any failure is reported: every
+        # evaluation lands in alert_history, including all-errored runs.
         await self.db.commit()
 
         # Phase 2: one short transaction per Met alert, so a later DB
@@ -189,14 +198,21 @@ class AlertEngine:
             if await self._claim_and_notify(record):
                 notifications_sent += 1
 
-        return RunSummary(
+        summary = RunSummary(
             alert_type=alert_type,
             met=sum(1 for r in evaluated if isinstance(r.outcome, Met)),
             not_met=sum(1 for r in evaluated if isinstance(r.outcome, NotMet)),
             errored=sum(1 for r in evaluated if isinstance(r.outcome, Errored)),
+            upstream_errored=sum(
+                1
+                for r in evaluated
+                if isinstance(r.outcome, Errored) and r.outcome.upstream
+            ),
             notifications_sent=notifications_sent,
             outcomes=[_to_record(r) for r in evaluated],
         )
+        _log_run_summary(summary, active=len(alerts))
+        return summary
 
     async def run_all(self) -> RunSummary:
         """Evaluate every active alert across every known type.
@@ -407,7 +423,10 @@ class AlertEngine:
             return _AlertOutcome(
                 alert=alert,
                 condition=condition,
-                outcome=Errored(reason=str(observation)),
+                outcome=Errored(
+                    reason=str(observation),
+                    upstream=isinstance(observation, (UpstreamError, RateLimited)),
+                ),
             )
 
         try:
@@ -458,6 +477,33 @@ def _to_decimal(value: Optional[float]) -> Optional[Decimal]:
     if value is None:
         return None
     return Decimal(str(value))
+
+
+def _log_run_summary(summary: RunSummary, *, active: int) -> None:
+    """One summary line per run, so Cloud Logging shows what each cron did.
+
+    An all-errored run caused by the provider is logged at ERROR: that is
+    what a revoked FMP key looks like (every price/technical evaluation
+    errors). An all-errored run with no provider failure (e.g. the only
+    alert is on a delisted ticker) is the alert's fault, not an outage —
+    WARNING, so it is visible without paging anyone every 15 minutes.
+    """
+    if summary.upstream_outage:
+        level = logging.ERROR
+    elif summary.all_errored:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
+    logger.log(
+        level,
+        "alert-engine %s: active=%d met=%d not_met=%d errored=%d notified=%d",
+        summary.alert_type,
+        active,
+        summary.met,
+        summary.not_met,
+        summary.errored,
+        summary.notifications_sent,
+    )
 
 
 def _to_record(record: _AlertOutcome) -> AlertOutcomeRecord:

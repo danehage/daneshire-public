@@ -58,8 +58,13 @@ async def get_ticker_context(
     ticker = normalize_ticker(symbol)
     try:
         ctx = await market.ticker_context(ticker)
-    except (TickerNotFound, UpstreamError) as exc:
+    except TickerNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except UpstreamError as exc:
+        # An FMP outage is not bad input: answer 502 and log it, so it
+        # shows up in Cloud Logging instead of as a "ticker not found".
+        logger.warning("ticker_context upstream error for %s: %s", ticker, exc)
+        raise HTTPException(status_code=502, detail="Market data unavailable")
     except Exception as exc:
         logger.warning("ticker_context failed for %s: %s", ticker, exc)
         raise HTTPException(status_code=502, detail="Market data unavailable")

@@ -14,6 +14,7 @@ from typing import Optional
 import pytest
 
 from app.schemas.market import HistoryFrame, PriceQuote, TechnicalAnalysis
+from app.services.fmp_client import RequestFailure
 from app.services.market import (
     MarketData,
     MarketDataError,
@@ -461,3 +462,52 @@ async def test_cache_primitive_failure_propagates_to_all_waiters():
     results = await asyncio.gather(*coros, return_exceptions=True)
     # All three see the same failure.
     assert all(isinstance(r, RuntimeError) for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Outage vs unknown ticker (loud job failures)
+#
+# The real FMP client swallows HTTP failures and returns empty results, so
+# a revoked key used to surface as TickerNotFound for every symbol. The
+# client's ``last_failure`` tells the two apart.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure, expected",
+    [
+        (RequestFailure(401, "Invalid API KEY"), UpstreamError),
+        (RequestFailure(503, ""), UpstreamError),
+        (RequestFailure(None, "connection refused"), UpstreamError),
+        (RequestFailure(404, "not found"), TickerNotFound),
+        (None, TickerNotFound),
+    ],
+)
+async def test_quotes_missing_ticker_classified_by_last_failure(failure, expected):
+    fmp = FakeFMP()
+    fmp.last_failure = failure
+    market = _make_market(fmp=fmp)
+
+    out = await market.quotes(["GONE"])
+
+    assert type(out["GONE"]) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure, expected",
+    [
+        (RequestFailure(401, "Invalid API KEY"), UpstreamError),
+        (RequestFailure(404, "not found"), TickerNotFound),
+        (None, TickerNotFound),
+    ],
+)
+async def test_analyses_missing_ticker_classified_by_last_failure(failure, expected):
+    fmp = FakeFMP()
+    fmp.last_failure = failure
+    market = _make_market(fmp=fmp)
+
+    out = await market.analyses(["GONE"])
+
+    assert type(out["GONE"]) is expected

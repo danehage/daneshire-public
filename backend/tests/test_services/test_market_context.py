@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.market import MarketData, TickerNotFound
+from app.services.fmp_client import FMPRequestError, RequestFailure
+from app.services.market import MarketData, TickerNotFound, UpstreamError
 
 
 class _FakeFMP:
@@ -113,6 +114,20 @@ async def test_fetch_ticker_context_unknown_symbol_raises():
 
     with pytest.raises(TickerNotFound):
         await _market(_NoProfile())._fetch_ticker_context("ZZZZZZZ")
+
+
+@pytest.mark.asyncio
+async def test_fetch_ticker_context_profile_request_failure_is_upstream():
+    """A failed profile request (e.g. revoked key) is an outage, not 404."""
+
+    class _ProfileDown(_FakeFMP):
+        async def get_company_profile(self, ticker: str):
+            raise FMPRequestError(RequestFailure(401, "Invalid API KEY"), "/stable/profile")
+
+    with pytest.raises(UpstreamError) as exc_info:
+        await _market(_ProfileDown())._fetch_ticker_context("AAPL")
+    assert not isinstance(exc_info.value, TickerNotFound)
+    assert "401" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

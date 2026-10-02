@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.database import get_db
-from app.services.market import get_market, TickerNotFound
+from app.services.market import get_market, TickerNotFound, UpstreamError
 
 
 _SAMPLE_CTX = {
@@ -60,6 +60,8 @@ class _FakeMarket:
     async def ticker_context(self, ticker: str) -> dict:
         if ticker == "NOTFOUND":
             raise TickerNotFound(ticker)
+        if ticker == "OUTAGE":
+            raise UpstreamError(ticker, "FMP /stable/profile: HTTP 401")
         return {**_SAMPLE_CTX, "ticker": ticker}
 
 
@@ -113,6 +115,16 @@ async def test_context_normalises_symbol_to_uppercase(ticker_client):
 async def test_context_returns_404_for_unknown_ticker(ticker_client):
     res = await ticker_client.get("/api/ticker/NOTFOUND/context")
     assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_context_returns_502_when_market_data_is_down(ticker_client, caplog):
+    """An FMP outage is not "ticker not found" — it used to answer 404."""
+    with caplog.at_level("WARNING", logger="app.routes.ticker"):
+        res = await ticker_client.get("/api/ticker/OUTAGE/context")
+    assert res.status_code == 502
+    assert res.json() == {"detail": "Market data unavailable"}
+    assert "OUTAGE" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ import asyncio
 import logging
 from datetime import date
 from typing import Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 _REQUESTS_PER_SECOND = 1.0
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 2.0
+
+
+def _endpoint(url: str) -> str:
+    """URL path only — never the query, which carries the API token."""
+    return urlsplit(url).path
 
 
 class FinnhubClient:
@@ -50,6 +56,12 @@ class FinnhubClient:
                 await asyncio.sleep(min_interval - elapsed)
             self._last_request_time = loop.time()
 
+    def _redact(self, text: str) -> str:
+        """Strip the API token from text headed for the logs."""
+        if self.api_key and text:
+            return text.replace(self.api_key, "***")
+        return text
+
     async def _get(self, url: str, params: dict) -> Optional[dict]:
         """GET with throttle and retry on 429 / network errors."""
         params = {**params, "token": self.api_key}
@@ -74,13 +86,33 @@ class FinnhubClient:
                             logger.error("Finnhub rate limited after %d retries", _MAX_RETRIES)
                             return None
                     else:
-                        logger.debug("Finnhub request failed: HTTP %d", response.status_code)
+                        # WARNING, not debug: the app logger runs at INFO,
+                        # so a revoked key used to fail silently and the
+                        # job reported success. Log the endpoint path only
+                        # — the token travels in the query params.
+                        logger.warning(
+                            "Finnhub request failed (%s): HTTP %d %s",
+                            _endpoint(url),
+                            response.status_code,
+                            self._redact(response.text[:200]),
+                        )
                         return None
                 except httpx.RequestError as exc:
-                    logger.debug("Finnhub network error: %s", exc)
+                    detail = self._redact(str(exc)[:200]) or type(exc).__name__
                     if attempt < _MAX_RETRIES:
+                        logger.debug(
+                            "Finnhub network error (%s), retrying: %s",
+                            _endpoint(url),
+                            detail,
+                        )
                         await asyncio.sleep(_RETRY_BASE_DELAY)
                     else:
+                        logger.warning(
+                            "Finnhub network error (%s) after %d retries: %s",
+                            _endpoint(url),
+                            _MAX_RETRIES,
+                            detail,
+                        )
                         return None
         return None
 
