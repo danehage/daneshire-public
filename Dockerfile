@@ -51,5 +51,15 @@ ENV PORT=8080
 
 EXPOSE 8080
 
+# Run as an unprivileged user so an RCE in the app or a dependency can't
+# rewrite the image's code or packages. The code stays root-owned (read-only
+# to the app); the only runtime writes are the FMP/scanner cache, created
+# relative to the CWD as ./scanner_cache, and pg_dump's temp file for the
+# nightly backup, which goes to /tmp (world-writable already).
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --create-home --home-dir /home/app app \
+    && install -d -o app -g app /app/scanner_cache
+USER app
+
 # Run with production settings
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

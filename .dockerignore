@@ -3,8 +3,9 @@
 .gitignore
 
 # Environment files
-.env*
-!.env.example
+# (**/ so backend/.env is excluded too — a bare ".env*" only matches the root)
+**/.env*
+!**/.env.example
 
 # Python
 **/__pycache__
@@ -14,6 +15,9 @@
 .coverage
 htmlcov
 *.egg-info
+**/.venv
+**/venv
+**/scanner_cache
 
 # Node
 **/node_modules

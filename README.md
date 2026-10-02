@@ -60,7 +60,7 @@ cd daneshire
 cd backend
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # runtime deps + pytest
 
 # Create backend/.env (see .env.example at the repo root for the full template).
 # Settings load .env from the working directory, so a bare `uvicorn` run from
@@ -129,7 +129,7 @@ pytest tests/ -v
 
 See [DEPLOY.md](DEPLOY.md) for first-time GCP setup (secrets, service accounts, Cloud Scheduler jobs).
 
-The production image installs from `backend/requirements.lock` (hash-pinned, `--require-hashes`). `requirements.txt` stays the source of truth for direct dependencies; regenerate the lockfile when it changes.
+The production image installs from `backend/requirements.lock` (hash-pinned, `--require-hashes`) and runs as an unprivileged `app` user. `requirements.txt` (runtime) and `requirements-dev.txt` (tests/dev, not in the image) stay the source of truth for direct dependencies; the locks must be compiled on Linux + Python 3.12 (a Windows compile drops uvloop). To change dependencies, edit `requirements*.txt` on a branch, push, then run the **Regenerate locks** workflow on that branch (GitHub → Actions → Regenerate locks → Run workflow, or `gh workflow run regenerate-locks.yml --ref <branch>`); it commits both updated locks back to the branch. CI installs `requirements-dev.lock`.
 
 Production requires HTTP Basic Auth credentials (configured via `AUTH_USERNAME` and `AUTH_PASSWORD` secrets).
 

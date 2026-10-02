@@ -47,13 +47,18 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.lock
+          cache-dependency-path: |
+            backend/requirements.lock
+            backend/requirements-dev.lock
 
       - name: Install dependencies
         working-directory: backend
         # Same hash-pinned install the production image performs, so a lock
-        # that would fail the Docker build fails here first.
-        run: pip install --require-hashes -r requirements.lock
+        # that would fail the Docker build fails here first; then the dev lock
+        # (a superset with pytest etc.), which the image does not install.
+        run: |
+          pip install --require-hashes -r requirements.lock
+          pip install --require-hashes -r requirements-dev.lock
 
       - name: Run migrations
         working-directory: backend

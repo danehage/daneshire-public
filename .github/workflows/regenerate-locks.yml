@@ -1,0 +1,54 @@
+name: Regenerate locks
+
+# Regenerates backend/requirements.lock and requirements-dev.lock on Linux +
+# Python 3.12 (the production image's platform) and commits them to the branch
+# it was dispatched on. pip-compile output is platform-dependent: compiling on
+# Windows drops uvloop (uvicorn[standard], non-Windows only) and adds colorama,
+# so the locks must not be generated locally.
+#
+# Usage: edit requirements*.txt on a branch, push, then
+#   gh workflow run regenerate-locks.yml --ref <branch>
+# (or GitHub -> Actions -> Regenerate locks -> Run workflow).
+#
+# Note: pushes made with GITHUB_TOKEN don't trigger other workflows, so CI
+# won't re-run on the lock commit by itself; push again or re-run CI.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    # Only ever commit to a feature branch, never straight to master.
+    if: github.ref != 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-tools
+        run: pip install pip-tools==7.6.1
+
+      - name: Compile locks
+        working-directory: backend
+        run: |
+          pip-compile --generate-hashes --no-strip-extras --output-file=requirements.lock requirements.txt
+          pip-compile --generate-hashes --no-strip-extras --output-file=requirements-dev.lock requirements-dev.txt
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet -- backend/requirements.lock backend/requirements-dev.lock; then
+            echo "Locks already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/requirements.lock backend/requirements-dev.lock
+          git commit -m "chore(deps): regenerate requirements locks (linux/py3.12)"
+          git push origin "HEAD:${{ github.ref_name }}"

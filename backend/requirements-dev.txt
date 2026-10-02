@@ -1,0 +1,12 @@
+# Test/dev-only dependencies, on top of the runtime set. Not installed in the
+# production image. CI installs requirements-dev.lock (hash-pinned, generated
+# from this file under Python 3.12; see the command in requirements.txt).
+-r requirements.txt
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+
+# Dev scripts (backend/scripts/ load .env directly; the app itself reads .env
+# through pydantic-settings, which pulls python-dotenv in transitively)
+python-dotenv>=1.0.0

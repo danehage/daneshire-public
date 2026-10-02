@@ -1,6 +1,13 @@
-# Direct dependencies. The deployed image installs from requirements.lock
-# (hash-pinned, generated from this file). After editing this file run:
-#   pip-compile --generate-hashes --output-file=requirements.lock requirements.txt
+# Direct runtime dependencies. The deployed image installs from
+# requirements.lock (hash-pinned, generated from this file). Test/dev-only
+# deps live in requirements-dev.txt. Both locks must be compiled on Linux +
+# Python 3.12 (the image's platform); a Windows compile drops uvloop and adds
+# colorama. So: edit requirements*.txt on a branch, push, then run the
+# "Regenerate locks" workflow on that branch (GitHub -> Actions -> Regenerate
+# locks -> Run workflow, or `gh workflow run regenerate-locks.yml --ref <branch>`).
+# It runs (from backend/):
+#   pip-compile --generate-hashes --no-strip-extras --output-file=requirements.lock requirements.txt
+#   pip-compile --generate-hashes --no-strip-extras --output-file=requirements-dev.lock requirements-dev.txt
 
 # FastAPI + Uvicorn
 fastapi>=0.109.0
@@ -26,16 +33,9 @@ pytz>=2023.3
 # Vault trade-journal sync (frontmatter parsing — #61)
 pyyaml>=6.0
 
-# Testing
-pytest>=7.4.0
-pytest-asyncio>=0.23.0
-
 # Vision parsing (portfolio screenshot → structured JSON)
 google-genai>=1.0.0
 python-multipart>=0.0.9
 
 # GCS backup
 google-cloud-storage>=2.14.0
-
-# Dev
-python-dotenv>=1.0.0
