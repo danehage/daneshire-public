@@ -334,6 +334,8 @@ class MarketData:
             if raw:
                 try:
                     quote = _quote_from_raw(s, raw)
+                except MarketDataError as exc:
+                    results[s] = exc
                 except Exception as exc:  # noqa: BLE001
                     results[s] = UpstreamError(s, str(exc))
                 else:
@@ -754,7 +756,16 @@ def compute_realized_move(
 
 
 def _quote_from_raw(ticker: str, raw: dict) -> PriceQuote:
-    price = float(raw.get("price") or 0.0)
+    # A quote without a usable price is no quote. Coercing a null/missing
+    # price to 0.0 made every "price < X" alert fire, so surface it the same
+    # way as a ticker absent from the response.
+    raw_price = raw.get("price")
+    try:
+        price = float(raw_price) if raw_price is not None else None
+    except (TypeError, ValueError):
+        price = None
+    if price is None or not price > 0:
+        raise TickerNotFound(ticker, f"no usable price in quote ({raw_price!r})")
     change = float(raw.get("change") or 0.0)
     change_pct = float(
         raw.get("changesPercentage", raw.get("changePercentage", 0.0)) or 0.0

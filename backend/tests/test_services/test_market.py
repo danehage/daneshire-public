@@ -21,6 +21,7 @@ from app.services.market import (
     TickerNotFound,
     UpstreamError,
     _TTLSingleflightCache,
+    _quote_from_raw,
 )
 
 
@@ -251,6 +252,49 @@ async def test_quotes_missing_tickers_return_not_found():
     assert set(results.keys()) == {"AAPL", "MSFT", "BAD", "GONE"}
     # All misses fetched in a single bulk request.
     assert fmp.batch_calls == [["AAPL", "MSFT", "BAD", "GONE"]]
+
+
+# A quote with no usable price must never become a $0.00 quote: 0.0 makes
+# every "price < X" alert fire. It is treated like a missing ticker instead.
+@pytest.mark.parametrize(
+    "raw",
+    [{}, {"price": None}, {"price": 0}, {"price": 0.0}, {"price": -1.5}, {"price": "n/a"}],
+)
+def test_quote_from_raw_rejects_missing_or_non_positive_price(raw):
+    with pytest.raises(TickerNotFound):
+        _quote_from_raw("AAPL", {"volume": 1_000, **raw})
+
+
+def test_quote_from_raw_keeps_normal_price():
+    quote = _quote_from_raw("AAPL", {"price": 150.25, "change": -1.0, "volume": 10})
+    assert quote.price == 150.25
+    assert quote.change == -1.0
+    assert quote.volume == 10
+
+
+@pytest.mark.asyncio
+async def test_quote_null_price_raises_not_found():
+    fmp = FakeFMP(quotes={"AAPL": {"price": None, "volume": 10_000}})
+    market = _make_market(fmp=fmp)
+
+    with pytest.raises(TickerNotFound):
+        await market.quote("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_quotes_null_price_surfaces_not_found_and_is_not_cached():
+    fmp = FakeFMP(
+        quotes={"AAPL": {"price": 150.0}, "NULLP": {"price": None, "volume": 5}},
+    )
+    market = _make_market(fmp=fmp)
+
+    results = await market.quotes(["AAPL", "NULLP"])
+
+    assert isinstance(results["AAPL"], PriceQuote)
+    assert isinstance(results["NULLP"], TickerNotFound)
+    # Not cached: the next call asks FMP again rather than replaying a bad quote.
+    await market.quotes(["NULLP"])
+    assert fmp.batch_calls == [["AAPL", "NULLP"], ["NULLP"]]
 
 
 @pytest.mark.asyncio
