@@ -1,3 +1,5 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,3 +65,41 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Settings that must be non-empty in production. With any of them blank the
+# app fails open: no AUTH_* makes BasicAuthMiddleware grant owner to every
+# request, and no SCHEDULER_SECRET leaves /api/internal/* unprotected.
+_REQUIRED_IN_PRODUCTION = ("auth_username", "auth_password", "scheduler_secret")
+
+
+def validate_startup_config(cfg: Settings | None = None) -> None:
+    """Refuse to start with a configuration that would fail open.
+
+    Called from the FastAPI lifespan. Raises ``RuntimeError`` naming the
+    offending setting; never includes setting values in the message.
+
+    - In production, AUTH_USERNAME, AUTH_PASSWORD and SCHEDULER_SECRET must
+      all be set.
+    - On Cloud Run (``K_SERVICE`` is set by the platform), ENVIRONMENT must
+      be "production". The "development" default enables the scheduler
+      secret bypass, /docs and dev CORS, and the service is public
+      (--allow-unauthenticated).
+    """
+    cfg = cfg or settings
+
+    if os.environ.get("K_SERVICE") and not cfg.is_production:
+        raise RuntimeError(
+            "Refusing to start: running on Cloud Run (K_SERVICE is set) but "
+            "ENVIRONMENT is not 'production'."
+        )
+
+    if cfg.is_production:
+        missing = [
+            name.upper() for name in _REQUIRED_IN_PRODUCTION if not getattr(cfg, name)
+        ]
+        if missing:
+            raise RuntimeError(
+                "Refusing to start in production: required setting(s) empty: "
+                + ", ".join(missing)
+            )

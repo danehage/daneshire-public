@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import settings
+from app.config import settings, validate_startup_config
 from app.database import get_db
 
 
@@ -271,6 +271,9 @@ from app.services.vision_parser import GeminiVisionParser
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail closed: a production deploy missing auth or the scheduler secret,
+    # or a Cloud Run instance not marked production, must not serve traffic.
+    validate_startup_config()
     # Startup: build one shared FMPClient, one StockScanner that consumes
     # it, and one MarketData seam over both. Routes resolve the singleton
     # via Depends(get_market). See CONTEXT.md § Market Data.
