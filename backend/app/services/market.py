@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -108,22 +109,49 @@ class _CacheEntry(Generic[T]):
 
 
 class _TTLSingleflightCache(Generic[T]):
-    """Tiny stdlib-only TTL cache with per-key single-flight.
+    """Tiny stdlib-only bounded TTL + LRU cache with per-key single-flight.
 
     Single-flight is implemented via a dict of in-flight `asyncio.Future`s
     keyed by the cache key: when key K is being fetched, additional
     callers `await` the same future instead of triggering parallel
     requests. The first caller is responsible for fulfilling the future
     (success or exception) and removing it from the dict.
+
+    Memory is bounded: the store holds at most ``maxsize`` entries,
+    evicting least-recently-used first (a hit moves the key to the MRU
+    end). Expired entries are also swept on insert — whenever the store
+    overflows and every ``_SWEEP_EVERY`` inserts — so keys that are never
+    read again don't linger until the cap is hit. The prod instance runs
+    in 512Mi with guest-reachable routes feeding these caches, so an
+    unbounded dict is a slow OOM. Eviction only touches completed
+    entries; in-flight futures live in a separate dict and are unaffected.
     """
 
-    __slots__ = ("_ttl", "_clock", "_entries", "_inflight", "_lock")
+    __slots__ = (
+        "_ttl",
+        "_maxsize",
+        "_clock",
+        "_entries",
+        "_inflight",
+        "_lock",
+        "_inserts_since_sweep",
+    )
 
-    def __init__(self, ttl_seconds: float, clock=time.monotonic):
+    # Sweep expired entries at least this often (in inserts), even while the
+    # store is under ``maxsize``. A sweep is O(n), so amortised O(1)/insert.
+    _SWEEP_EVERY = 128
+
+    def __init__(
+        self, ttl_seconds: float, clock=time.monotonic, maxsize: int = 1024
+    ):
+        if maxsize < 1:
+            raise ValueError("maxsize must be >= 1")
         self._ttl = float(ttl_seconds)
+        self._maxsize = int(maxsize)
         self._clock = clock
-        self._entries: dict[Any, _CacheEntry[T]] = {}
+        self._entries: OrderedDict[Any, _CacheEntry[T]] = OrderedDict()
         self._inflight: dict[Any, asyncio.Future[T]] = {}
+        self._inserts_since_sweep = 0
         # Guards entries + inflight dict membership. Held only for O(1)
         # bookkeeping, never across the actual fetch.
         self._lock = asyncio.Lock()
@@ -131,6 +159,13 @@ class _TTLSingleflightCache(Generic[T]):
     @property
     def ttl(self) -> float:
         return self._ttl
+
+    @property
+    def maxsize(self) -> int:
+        return self._maxsize
+
+    def __len__(self) -> int:
+        return len(self._entries)
 
     def _get_fresh(self, key: Any) -> Optional[T]:
         entry = self._entries.get(key)
@@ -140,7 +175,34 @@ class _TTLSingleflightCache(Generic[T]):
             # Expired — drop lazily.
             self._entries.pop(key, None)
             return None
+        self._entries.move_to_end(key)  # LRU: mark most-recently used
         return entry.value
+
+    def _sweep_expired(self) -> None:
+        now = self._clock()
+        expired = [k for k, e in self._entries.items() if e.expires_at <= now]
+        for k in expired:
+            del self._entries[k]
+        self._inserts_since_sweep = 0
+
+    def _store(self, key: Any, value: T) -> None:
+        """Insert/refresh ``key``, then enforce the expiry sweep + LRU cap.
+
+        Synchronous (no awaits), so it is atomic with respect to the event
+        loop whether or not the caller holds ``_lock``.
+        """
+        self._entries[key] = _CacheEntry(
+            value=value, expires_at=self._clock() + self._ttl
+        )
+        self._entries.move_to_end(key)
+        self._inserts_since_sweep += 1
+        if (
+            len(self._entries) > self._maxsize
+            or self._inserts_since_sweep >= self._SWEEP_EVERY
+        ):
+            self._sweep_expired()
+        while len(self._entries) > self._maxsize:
+            self._entries.popitem(last=False)  # evict least-recently used
 
     async def get_or_fetch(self, key: Any, fetch) -> T:
         """Return the cached value for ``key``, calling ``fetch()`` on miss.
@@ -177,9 +239,7 @@ class _TTLSingleflightCache(Generic[T]):
                 # when no other waiter is subscribed).
             else:
                 async with self._lock:
-                    self._entries[key] = _CacheEntry(
-                        value=value, expires_at=self._clock() + self._ttl
-                    )
+                    self._store(key, value)
                     self._inflight.pop(key, None)
                 if not waiter.done():
                     waiter.set_result(value)
@@ -197,9 +257,7 @@ class _TTLSingleflightCache(Generic[T]):
         in one request (see ``MarketData.quotes``), bypassing the per-key
         single-flight ``get_or_fetch`` path.
         """
-        self._entries[key] = _CacheEntry(
-            value=value, expires_at=self._clock() + self._ttl
-        )
+        self._store(key, value)
 
     def invalidate(self, key: Any) -> None:
         self._entries.pop(key, None)
@@ -251,26 +309,41 @@ class MarketData:
         self.scanner = scanner
         self._finnhub = finnhub_client
         self._tastytrade = tastytrade_client
+        # Per-cache ``maxsize`` caps memory on the single 512Mi instance.
+        # Sized to the largest legitimate working set, weighted by entry size:
+        # Quotes are tiny; the earnings-tagging sweep quotes ~600 tickers at
+        # season peak and portfolio/alert batches add more, so 2000.
         self._quote_cache: _TTLSingleflightCache[PriceQuote] = _TTLSingleflightCache(
-            quote_ttl, clock=clock
+            quote_ttl, clock=clock, maxsize=2000
         )
+        # Analyses are small dicts; covers watchlist + guest ticker lookups.
         self._analysis_cache: _TTLSingleflightCache[TechnicalAnalysis] = (
-            _TTLSingleflightCache(analysis_ttl, clock=clock)
+            _TTLSingleflightCache(analysis_ttl, clock=clock, maxsize=500)
         )
+        # History frames are the heavy ones — backfill-realized-moves asks
+        # for 1500 calendar days (~1000 bars) per ticker and walks the whole
+        # earnings table. Keep only the recent working set (plateau checks
+        # touch ~holdings count); the backfill loop reads each frame once.
         self._history_cache: _TTLSingleflightCache[HistoryFrame] = (
-            _TTLSingleflightCache(history_ttl, clock=clock)
+            _TTLSingleflightCache(history_ttl, clock=clock, maxsize=64)
         )
+        # Keyed by (start, end) range; the UI asks for a handful of windows.
         self._earnings_cache: _TTLSingleflightCache[list] = _TTLSingleflightCache(
-            earnings_ttl, clock=clock
+            earnings_ttl, clock=clock, maxsize=32
         )
+        # One small snapshot per ticker; refresh-snapshots covers the
+        # near-term earnings set (low hundreds).
         self._iv_cache: _TTLSingleflightCache[IVSnapshotRaw] = _TTLSingleflightCache(
-            iv_ttl, clock=clock
+            iv_ttl, clock=clock, maxsize=1000
         )
+        # Short lists of per-event moves keyed by (ticker, events).
         self._realized_move_cache: _TTLSingleflightCache[list] = _TTLSingleflightCache(
-            realized_move_ttl, clock=clock
+            realized_move_ttl, clock=clock, maxsize=500
         )
+        # Profile + ratios + income + news per ticker (tens of KB each) and
+        # guest-reachable via /api/ticker/{s}/context, so cap tighter.
         self._context_cache: _TTLSingleflightCache[dict] = _TTLSingleflightCache(
-            context_ttl, clock=clock
+            context_ttl, clock=clock, maxsize=200
         )
 
     # -- quotes -------------------------------------------------------------

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from app.services.fmp_client import FMPClient
+from app.services.fmp_client import FMPClient, prune_dated_cache_files
 from app.services.indicators import TechnicalIndicators
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ class StockScanner:
 
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
+        prune_dated_cache_files(cache_dir)
 
     def _get_cache_path(self, cache_name: str) -> str:
         """Get path for today's cache file."""
@@ -322,6 +323,13 @@ class StockScanner:
         """
         scan_id = str(uuid4())
         cache_key = f"stage1_{universe}"
+
+        # The instance can stay warm across days; drop yesterday's stage1 /
+        # history files before writing today's (in-memory FS on Cloud Run).
+        prune_dated_cache_files(self.cache_dir)
+        client_cache_dir = getattr(self.client, "cache_dir", None)
+        if client_cache_dir and client_cache_dir != self.cache_dir:
+            prune_dated_cache_files(client_cache_dir)
 
         # Stage 1: Fast filter
         survivors = {}

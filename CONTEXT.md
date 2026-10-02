@@ -36,7 +36,7 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 **Observation** types (from the Alerts section above) are produced here: `PriceQuote`, `TechnicalAnalysis`, `HistoryFrame`, frozen Pydantic models in `app/schemas/market.py`.
 
-**MarketData cache** — in-process TTL cache, keyed by (kind, ticker). Quotes ~10s, analyses ~5min, history ~1hr. Reads are single-flight per key (concurrent identical requests await the first in-flight fetch instead of stampeding FMP). Writes don't flow through MarketData, so manual invalidation isn't needed.
+**MarketData cache** — in-process TTL cache, keyed by (kind, ticker). Quotes ~10s, analyses ~5min, history ~1hr. Each cache is bounded (per-kind `maxsize`, LRU eviction, expired entries swept on insert) so the single 512Mi instance can't grow it without limit. Reads are single-flight per key (concurrent identical requests await the first in-flight fetch instead of stampeding FMP). Writes don't flow through MarketData, so manual invalidation isn't needed.
 
 **MarketDataError** — single exception hierarchy: `TickerNotFound`, `RateLimited`, `UpstreamError`. Returned per-ticker from batch methods; raised from singleton methods.
 

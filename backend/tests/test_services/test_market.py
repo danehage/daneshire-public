@@ -465,6 +465,113 @@ async def test_cache_primitive_failure_propagates_to_all_waiters():
 
 
 # ---------------------------------------------------------------------------
+# Bounded cache: LRU eviction + expiry sweep (memory safety on 512Mi)
+# ---------------------------------------------------------------------------
+
+
+def _const(v):
+    async def fetch():
+        return v
+
+    return fetch
+
+
+@pytest.mark.asyncio
+async def test_cache_primitive_lru_evicts_least_recently_used():
+    cache: _TTLSingleflightCache[str] = _TTLSingleflightCache(
+        ttl_seconds=60, clock=FakeClock(), maxsize=2
+    )
+    await cache.get_or_fetch("a", _const("A"))
+    await cache.get_or_fetch("b", _const("B"))
+    # Hit "a" so "b" becomes the LRU entry.
+    assert await cache.get_or_fetch("a", _const("A2")) == "A"
+    await cache.get_or_fetch("c", _const("C"))
+
+    assert len(cache) == 2
+    assert cache._get_fresh("b") is None  # evicted
+    assert cache._get_fresh("a") == "A"
+    assert cache._get_fresh("c") == "C"
+
+
+def test_cache_primitive_set_respects_maxsize():
+    cache: _TTLSingleflightCache[int] = _TTLSingleflightCache(
+        ttl_seconds=60, clock=FakeClock(), maxsize=3
+    )
+    for i in range(10):
+        cache.set(i, i)
+    assert len(cache) == 3
+    assert [cache._get_fresh(i) for i in (7, 8, 9)] == [7, 8, 9]
+
+
+def test_cache_primitive_overflow_sweeps_expired_before_evicting_live():
+    clock = FakeClock()
+    cache: _TTLSingleflightCache[str] = _TTLSingleflightCache(
+        ttl_seconds=10, clock=clock, maxsize=3
+    )
+    cache.set("old1", "x")
+    cache.set("old2", "x")
+    clock.advance(5)
+    cache.set("live", "L")  # expires at +15
+    clock.advance(6)  # old1/old2 expired, live still fresh
+    cache.set("new", "N")  # overflow -> sweep drops expired, no live eviction
+
+    assert len(cache) == 2
+    assert cache._get_fresh("live") == "L"
+    assert cache._get_fresh("new") == "N"
+
+
+def test_cache_primitive_periodic_sweep_drops_unread_expired_keys():
+    """Expired keys that are never read again get swept even under maxsize."""
+    clock = FakeClock()
+    cache: _TTLSingleflightCache[int] = _TTLSingleflightCache(
+        ttl_seconds=10, clock=clock, maxsize=10_000
+    )
+    for i in range(50):
+        cache.set(("stale", i), i)
+    clock.advance(11)
+    for i in range(_TTLSingleflightCache._SWEEP_EVERY):
+        cache.set(("fresh", i), i)
+    assert all(k[0] == "fresh" for k in cache._entries)
+    assert len(cache) == _TTLSingleflightCache._SWEEP_EVERY
+
+
+@pytest.mark.asyncio
+async def test_cache_primitive_singleflight_survives_bounded_cache():
+    """Concurrent identical fetches still coalesce, even when other keys
+    churn through a tiny cache while the fetch is in flight."""
+    cache: _TTLSingleflightCache[int] = _TTLSingleflightCache(
+        ttl_seconds=60, maxsize=1
+    )
+    calls = {"n": 0}
+    gate = asyncio.Event()
+
+    async def slow_fetch():
+        calls["n"] += 1
+        await gate.wait()
+        return 42
+
+    waiters = [
+        asyncio.create_task(cache.get_or_fetch("k", slow_fetch)) for _ in range(5)
+    ]
+    await asyncio.sleep(0.01)
+    # Churn the store while "k" is in flight; must not disturb the future.
+    for i in range(5):
+        cache.set(("other", i), i)
+    gate.set()
+    results = await asyncio.gather(*waiters)
+
+    assert results == [42] * 5
+    assert calls["n"] == 1
+    assert cache._inflight == {}
+    assert cache._get_fresh("k") == 42
+
+
+def test_cache_primitive_rejects_nonpositive_maxsize():
+    with pytest.raises(ValueError):
+        _TTLSingleflightCache(ttl_seconds=1, maxsize=0)
+
+
+# ---------------------------------------------------------------------------
 # Outage vs unknown ticker (loud job failures)
 #
 # The real FMP client swallows HTTP failures and returns empty results, so

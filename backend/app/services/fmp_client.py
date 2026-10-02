@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, date
 from typing import Optional
 
@@ -17,6 +18,43 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Day-scoped disk cache files end in ``_<YYYY-MM-DD>.json`` (``stage1_*`` from
+# the scanner, per-ticker history files from this client — matched on the
+# suffix, not the prefix, so renamed cache kinds are still covered).
+_DATED_CACHE_RE = re.compile(r"_(\d{4}-\d{2}-\d{2})\.json$")
+
+
+def prune_dated_cache_files(cache_dir: str, today: Optional[date] = None) -> int:
+    """Delete ``*_<date>.json`` files in ``cache_dir`` dated before ``today``.
+
+    These caches are only ever read for the current day, but nothing deleted
+    old ones. On Cloud Run the filesystem is in-memory and counts against the
+    instance's 512Mi, so a long-lived instance accumulated every day's files.
+    One ``os.scandir`` pass; never raises (pruning is best-effort). Returns
+    the number of files removed.
+    """
+    today_str = (today or datetime.now().date()).isoformat()
+    removed = 0
+    try:
+        with os.scandir(cache_dir) as it:
+            for entry in it:
+                m = _DATED_CACHE_RE.search(entry.name)
+                # ISO dates compare correctly as strings.
+                if m is None or m.group(1) >= today_str:
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        os.remove(entry.path)
+                        removed += 1
+                except OSError as e:
+                    logger.debug("cache prune: could not remove %s: %s", entry.path, e)
+    except OSError as e:
+        logger.debug("cache prune: could not scan %s: %s", cache_dir, e)
+    if removed:
+        logger.info("cache prune: removed %d stale file(s) from %s", removed, cache_dir)
+    return removed
 
 
 @dataclass(frozen=True)
@@ -91,6 +129,7 @@ class FMPClient:
         self.cache_dir = cache_dir
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
+        prune_dated_cache_files(cache_dir)
 
         # Why the most recent request failed, for actionable logging (#72).
         self.last_failure: Optional[RequestFailure] = None
