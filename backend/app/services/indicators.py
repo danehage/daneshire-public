@@ -17,6 +17,31 @@ MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 
+_ET = pytz.timezone("America/New_York")
+
+
+def is_regular_session(now_et: datetime) -> bool:
+    """True during the regular US-equity session: weekdays 09:30–16:00 ET.
+
+    Minute resolution, both ends inclusive, so the scheduler tick that lands
+    a few seconds after 16:00:00 still runs the closing check. A tz-aware
+    datetime is converted to ET first; a naive one is assumed to be ET.
+
+    Exchange holidays and half-days are NOT handled (ADR-0001 defers a
+    market-calendar module); a holiday weekday counts as a session day.
+    """
+    if now_et.tzinfo is not None:
+        now_et = now_et.astimezone(_ET)
+    if now_et.weekday() >= 5:
+        return False
+    hm = (now_et.hour, now_et.minute)
+    return (MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE) <= hm <= (MARKET_CLOSE_HOUR, 0)
+
+
+def current_et_time() -> datetime:
+    """Current time in America/New_York."""
+    return datetime.now(_ET)
+
 
 class TechnicalIndicators:
     """Calculate technical indicators from price data."""

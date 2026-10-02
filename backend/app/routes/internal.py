@@ -44,7 +44,7 @@ from app.schemas.earnings import (
 from app.schemas.iv import IVSnapshotRaw
 from app.services.alert_engine import AlertEngine
 from app.services.backup import run_backup
-from app.services.indicators import TechnicalIndicators
+from app.services.indicators import TechnicalIndicators, current_et_time, is_regular_session
 from app.services.market import MarketData, EarningsDateUnknown, MarketDataError, get_market, compute_realized_move
 from app.services.notifications import PushoverClient
 from app.services.portfolio_engine import PortfolioEngine
@@ -87,6 +87,32 @@ async def verify_scheduler_secret(
         raise HTTPException(status_code=401, detail="Invalid scheduler secret")
 
 
+def get_now_et() -> datetime:
+    """Clock dependency for the market-hours gate (overridable in tests)."""
+    return current_et_time()
+
+
+async def _run_during_session(
+    engine: AlertEngine, alert_type: str, now_et: datetime
+) -> RunSummary:
+    """Run ``alert_type`` only inside the regular session.
+
+    The price/technical cron is ``*/15 9-16 * * 1-5``, which fires
+    09:00–16:45 ET; the spec is 09:30–16:00. Gating here (not in the cron
+    expression, not in ``AlertEngine.run``) keeps the manual
+    ``POST /api/alerts/evaluate`` ungated. Holidays are not detected
+    (ADR-0001), so holiday weekdays still evaluate.
+    """
+    if not is_regular_session(now_et):
+        logger.info(
+            "%s checks skipped: outside market hours (%s ET)",
+            alert_type,
+            now_et.strftime("%a %H:%M"),
+        )
+        return RunSummary(alert_type=alert_type)
+    return await engine.run(alert_type)
+
+
 def _fail_if_upstream_outage(summary: RunSummary) -> RunSummary:
     """Turn a provider-caused all-errored run into a 502 for Cloud Scheduler.
 
@@ -117,18 +143,24 @@ def _fail_if_upstream_outage(summary: RunSummary) -> RunSummary:
 async def run_price_checks(
     engine: AlertEngine = Depends(get_alert_engine),
     _: None = Depends(verify_scheduler_secret),
+    now_et: datetime = Depends(get_now_et),
 ):
-    """Evaluate all active ``price_cross`` alerts."""
-    return _fail_if_upstream_outage(await engine.run("price_cross"))
+    """Evaluate all active ``price_cross`` alerts (regular session only)."""
+    return _fail_if_upstream_outage(
+        await _run_during_session(engine, "price_cross", now_et)
+    )
 
 
 @router.post("/alerts/run-technical-checks", response_model=RunSummary)
 async def run_technical_checks(
     engine: AlertEngine = Depends(get_alert_engine),
     _: None = Depends(verify_scheduler_secret),
+    now_et: datetime = Depends(get_now_et),
 ):
-    """Evaluate all active ``technical_signal`` alerts."""
-    return _fail_if_upstream_outage(await engine.run("technical_signal"))
+    """Evaluate all active ``technical_signal`` alerts (regular session only)."""
+    return _fail_if_upstream_outage(
+        await _run_during_session(engine, "technical_signal", now_et)
+    )
 
 
 @router.post("/alerts/run-reminders", response_model=RunSummary)

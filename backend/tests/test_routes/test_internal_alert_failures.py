@@ -23,16 +23,19 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
+import pytz
 from httpx import AsyncClient
 
 from app.config import settings
 from app.main import app
 from app.models.alert import Alert, AlertHistory
 from app.routes.dependencies import get_alert_engine
+from app.routes.internal import get_now_et
 from app.schemas.alert_runs import RunSummary
 from app.schemas.market import PriceQuote
 from app.services.alert_engine import AlertEngine
@@ -44,6 +47,18 @@ TEST_SECRET = "test-scheduler-secret"
 @pytest.fixture(autouse=True)
 def _scheduler_secret(monkeypatch):
     monkeypatch.setattr(settings, "scheduler_secret", TEST_SECRET)
+
+
+# Pin the market-hours gate inside the session (Wed 11:00 ET) so the
+# price/technical endpoints evaluate whatever time CI runs.
+_IN_SESSION = pytz.timezone("America/New_York").localize(datetime(2026, 9, 30, 11, 0))
+
+
+@pytest.fixture(autouse=True)
+def _pin_clock_in_session():
+    app.dependency_overrides[get_now_et] = lambda: _IN_SESSION
+    yield
+    app.dependency_overrides.pop(get_now_et, None)
 
 
 def _auth():

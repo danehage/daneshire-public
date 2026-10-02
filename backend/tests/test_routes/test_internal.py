@@ -10,10 +10,12 @@ behaviour, which is covered exhaustively in
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pytest
+import pytz
 from httpx import AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -22,6 +24,7 @@ from app.models.alert import Alert, AlertHistory
 from app.models.earnings import EarningsEvent
 from app.models.iv_snapshots import IVSnapshot
 from app.routes.dependencies import get_alert_engine
+from app.routes.internal import get_now_et
 from app.schemas.alert_conditions import Condition, Met
 from app.schemas.market import PriceQuote, TechnicalAnalysis
 from app.services.alert_engine import AlertEngine
@@ -54,6 +57,19 @@ async def cleanup_alerts(db_session: AsyncSession):
     await db_session.execute(delete(IVSnapshot))
     await db_session.execute(delete(EarningsEvent))
     await db_session.commit()
+
+
+_ET = pytz.timezone("America/New_York")
+# Wednesday 11:00 ET — inside the regular session, so the market-hours gate
+# on run-price-checks / run-technical-checks doesn't depend on when CI runs.
+IN_SESSION = _ET.localize(datetime(2026, 9, 30, 11, 0))
+
+
+@pytest.fixture(autouse=True)
+def pin_clock_in_session():
+    app.dependency_overrides[get_now_et] = lambda: IN_SESSION
+    yield
+    app.dependency_overrides.pop(get_now_et, None)
 
 
 def auth_headers():
@@ -198,6 +214,40 @@ async def test_run_price_checks_with_alert(
     assert data["met"] == 1
     assert data["notifications_sent"] == 1
     assert len(notifier.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", ["run-price-checks", "run-technical-checks"]
+)
+async def test_run_checks_skip_outside_market_hours(
+    client: AsyncClient, db_session: AsyncSession, path: str
+):
+    """The 09:00–09:15 and 16:15–16:45 cron ticks evaluate nothing."""
+    await client.post(
+        "/api/alerts",
+        json={
+            "ticker": "AAPL",
+            "name": "Test price alert",
+            "alert_type": "price_cross",
+            "condition": {"metric": "price", "operator": ">", "value": 1},
+        },
+    )
+    market = _FakeMarket(quotes_by_ticker={"AAPL": PriceQuote(ticker="AAPL", price=150.0)})
+    notifier = _RecordingNotifier()
+    _override_engine(db_session, market, notifier)
+    app.dependency_overrides[get_now_et] = lambda: _ET.localize(datetime(2026, 9, 30, 9, 15))
+    try:
+        response = await client.post(f"/api/internal/alerts/{path}", headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_alert_engine, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert (data["met"], data["not_met"], data["errored"], data["outcomes"]) == (0, 0, 0, [])
+    assert notifier.calls == []
+    history = (await db_session.execute(select(AlertHistory))).scalars().all()
+    assert history == []
 
 
 @pytest.mark.asyncio
