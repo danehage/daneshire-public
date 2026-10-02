@@ -19,6 +19,10 @@ export async function createWatchlistItem(data) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+  // 409 = the ticker already has an active watchlist row. The caller's goal
+  // (ticker on the watchlist) is met, so resolve instead of throwing; the
+  // mutation's onSuccess still refetches the list. Resolves null in that case.
+  if (res.status === 409) return null;
   if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
   return res.json();
 }

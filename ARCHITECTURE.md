@@ -270,7 +270,7 @@ GET  /api/scan/history/{scan_id}   → full results from a historical scan
 
 ```
 GET    /api/watchlist                → all items (filterable by ?status=watching)
-POST   /api/watchlist                → add ticker to watchlist
+POST   /api/watchlist                → add ticker to watchlist (409 if it already has a watching/owned row)
 PATCH  /api/watchlist/{id}           → update status, entry_price, tags, sort_order
 DELETE /api/watchlist/{id}           → remove from watchlist
 POST   /api/watchlist/reorder        → bulk update sort_order (drag-and-drop)

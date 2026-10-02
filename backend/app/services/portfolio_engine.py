@@ -320,7 +320,7 @@ class PortfolioEngine:
         return TradeResult(trade_row=trade, warnings=warnings)
 
     async def _maybe_demote_watchlist_item(self, ticker: str) -> None:
-        """Demote the watchlist item for ``ticker`` from 'owned' to 'closed'
+        """Demote the watchlist item(s) for ``ticker`` from 'owned' to 'closed'
         when the position is flat across every account."""
         all_accounts_result = await self.db.execute(select(Account.id))
         all_account_ids = list(all_accounts_result.scalars().all())
@@ -342,10 +342,17 @@ class PortfolioEngine:
                     WatchlistItem.status == "owned",
                 )
             )
-            wl_item = wl_result.scalar_one_or_none()
-            if wl_item is not None:
-                wl_item.status = "closed"
-                wl_item.updated_at = datetime.now(timezone.utc)
+            # Close every owned row, not just one: ticker has no unique
+            # constraint, so duplicate owned rows exist (older scanner /
+            # ticker-page adds). scalar_one_or_none() raised
+            # MultipleResultsFound here, *after* the trade was committed, so
+            # the client saw a 500 for a saved trade and a retry duplicated it.
+            wl_items = wl_result.scalars().all()
+            if wl_items:
+                now = datetime.now(timezone.utc)
+                for wl_item in wl_items:
+                    wl_item.status = "closed"
+                    wl_item.updated_at = now
                 await self.db.commit()
 
     async def portfolio_value(self, account_id: UUID) -> PortfolioValue:

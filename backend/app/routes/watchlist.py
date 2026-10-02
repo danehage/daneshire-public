@@ -17,6 +17,9 @@ from app.schemas.watchlist import (
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
+# Statuses that count as "on the watchlist" for duplicate detection.
+ACTIVE_STATUSES = ("watching", "owned", "position_open")
+
 
 @router.get("", response_model=list[WatchlistItemResponse])
 async def list_watchlist(
@@ -36,7 +39,28 @@ async def create_watchlist_item(
     item: WatchlistItemCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a ticker to the watchlist."""
+    """Add a ticker to the watchlist.
+
+    409 if the ticker already has an active row (watching / owned /
+    legacy position_open). ticker has no unique constraint, and duplicate
+    active rows break code that expects one row per ticker (e.g. the
+    owned → closed demotion on a full sell). A closed row doesn't block
+    re-adding: re-watching a closed ticker starts a fresh row.
+    """
+    ticker = item.ticker.upper()
+    existing = (
+        await db.execute(
+            select(WatchlistItem.id)
+            .where(WatchlistItem.ticker == ticker)
+            .where(WatchlistItem.status.in_(ACTIVE_STATUSES))
+            .limit(1)
+        )
+    ).scalar()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail=f"{ticker} is already on the watchlist"
+        )
+
     # Get max sort_order to put new item at the end
     max_order_result = await db.execute(
         select(WatchlistItem.sort_order).order_by(WatchlistItem.sort_order.desc()).limit(1)
@@ -44,7 +68,7 @@ async def create_watchlist_item(
     max_order = max_order_result.scalar() or 0
 
     db_item = WatchlistItem(
-        ticker=item.ticker.upper(),
+        ticker=ticker,
         status=item.status,
         position_type=item.position_type,
         entry_price=item.entry_price,

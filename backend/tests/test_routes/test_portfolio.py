@@ -1269,6 +1269,48 @@ async def test_commit_trade_full_close_demotes_to_closed(
 
 
 @pytest.mark.asyncio
+async def test_commit_trade_full_close_demotes_all_duplicate_owned_rows(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """ticker has no unique constraint, so two 'owned' rows for one ticker can
+    exist. A full sell must close both and return 201 — it used to raise
+    MultipleResultsFound after the trade was already committed (500 on a
+    saved trade; a retry then duplicated it)."""
+    account_id = await _setup_account_with_snapshot(client)
+
+    # Second owned AAPL row alongside the one the snapshot commit created.
+    db_session.add(WatchlistItem(ticker="AAPL", status="owned", sort_order=99, tags=[]))
+    await db_session.commit()
+
+    sell_all = {
+        "account_id": account_id,
+        "ticker": "AAPL",
+        "instrument_type": "equity",
+        "side": "sell",
+        "qty": "10",
+        "price": "200.00",
+        "executed_at": "2026-06-17T14:00:00Z",
+    }
+    response = await client.post("/api/portfolio/trades/commit", json=sell_all)
+    assert response.status_code == 201
+
+    db_session.expire_all()
+    rows = (
+        await db_session.execute(
+            select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+        )
+    ).scalars().all()
+    assert len(rows) == 2
+    assert all(r.status == "closed" for r in rows)
+
+    # Exactly one trade was saved.
+    trades = (
+        await db_session.execute(select(Trade).where(Trade.ticker == "AAPL"))
+    ).scalars().all()
+    assert len(trades) == 1
+
+
+@pytest.mark.asyncio
 async def test_commit_trade_partial_close_stays_owned(
     client: AsyncClient, db_session: AsyncSession
 ):

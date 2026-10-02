@@ -178,3 +178,46 @@ async def test_reorder_watchlist(client: AsyncClient):
     assert items[0]["ticker"] == "GOOG"
     assert items[1]["ticker"] == "AAPL"
     assert items[2]["ticker"] == "MSFT"
+
+
+@pytest.mark.asyncio
+async def test_create_duplicate_active_ticker_returns_409(client: AsyncClient):
+    """A ticker that already has an active row can't be added again
+    (case-insensitive); the existing row is untouched."""
+    r1 = await client.post("/api/watchlist", json={"ticker": "AAPL"})
+    assert r1.status_code == 201
+
+    r2 = await client.post("/api/watchlist", json={"ticker": "aapl"})
+    assert r2.status_code == 409
+    assert "AAPL" in r2.json()["detail"]
+
+    items = (await client.get("/api/watchlist")).json()
+    assert len(items) == 1
+    assert items[0]["id"] == r1.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_create_duplicate_of_owned_ticker_returns_409(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """An 'owned' row also blocks adding the ticker as 'watching'."""
+    db_session.add(WatchlistItem(ticker="NVDA", status="owned", sort_order=1, tags=[]))
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/watchlist", json={"ticker": "NVDA", "status": "watching"}
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_after_closed_row_is_allowed(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A closed row doesn't block re-watching the ticker."""
+    db_session.add(WatchlistItem(ticker="TSLA", status="closed", sort_order=1, tags=[]))
+    await db_session.commit()
+
+    response = await client.post("/api/watchlist", json={"ticker": "TSLA"})
+    assert response.status_code == 201
+    assert response.json()["status"] == "watching"

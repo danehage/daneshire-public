@@ -208,8 +208,13 @@ class VaultSyncService:
         watchlist. Never downgrades data — only fills/updates from the vault,
         which is authoritative for entries.
         """
+        # Oldest row first, matching snapshots/commit: ticker has no unique
+        # constraint, so with duplicates an unordered .first() could promote a
+        # different row each sync.
         result = await self.db.execute(
-            select(WatchlistItem).where(WatchlistItem.ticker == ticker)
+            select(WatchlistItem)
+            .where(WatchlistItem.ticker == ticker)
+            .order_by(WatchlistItem.created_at)
         )
         item = result.scalars().first()
         changed = False
