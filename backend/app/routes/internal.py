@@ -465,18 +465,93 @@ async def _has_trades(db: AsyncSession, event_id) -> bool:
     return int((await db.execute(stmt)).scalar() or 0) > 0
 
 
+# Finnhub's /calendar/earnings silently truncates at 1500 rows. A single
+# 28-day request plateaued at exactly 1500 upserts once October earnings
+# season filled the window (883 → 1147 → 1420 → 1500 → 1500, 2026-09-25..
+# 10-02), dropping everything past the cap. Fetch in weekly chunks instead.
+_CALENDAR_CHUNK_DAYS = 7
+_FINNHUB_CALENDAR_ROW_CAP = 1500
+
+
+async def _fetch_calendar_range(market: MarketData, start: date, end: date) -> list[dict]:
+    """Fetch ``start..end`` (inclusive); halve and refetch while capped.
+
+    A response with ``>= _FINNHUB_CALENDAR_ROW_CAP`` rows is presumed
+    truncated: log a WARNING and split the range in half, down to single
+    days. A single day still at the cap is kept as-is (nothing smaller to
+    ask for) with its own WARNING. ``EarningsDateUnknown`` propagates.
+    """
+    events = await market.earnings_calendar(start, end)
+    if len(events) < _FINNHUB_CALENDAR_ROW_CAP:
+        return events
+    if start >= end:
+        logger.warning(
+            "refresh-calendar: single day %s returned %d rows (Finnhub cap %d) "
+            "— events may be missing",
+            start,
+            len(events),
+            _FINNHUB_CALENDAR_ROW_CAP,
+        )
+        return events
+    mid = start + timedelta(days=(end - start).days // 2)
+    logger.warning(
+        "refresh-calendar: chunk %s → %s returned %d rows (Finnhub cap %d) "
+        "— splitting at %s and refetching",
+        start,
+        end,
+        len(events),
+        _FINNHUB_CALENDAR_ROW_CAP,
+        mid,
+    )
+    first = await _fetch_calendar_range(market, start, mid)
+    second = await _fetch_calendar_range(market, mid + timedelta(days=1), end)
+    return first + second
+
+
+async def _fetch_calendar_chunked(
+    market: MarketData,
+    start: date,
+    end: date,
+    chunk_days: int = _CALENDAR_CHUNK_DAYS,
+) -> list[dict]:
+    """Fetch the Finnhub calendar for ``start..end`` in ``chunk_days`` chunks.
+
+    Chunks are contiguous and non-overlapping. Results are concatenated and
+    deduped by (symbol, date), first occurrence wins. Any chunk failure
+    (``EarningsDateUnknown``) propagates, so the caller fails the whole run
+    exactly as it did for the former single request — no partial upsert.
+    """
+    events: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=chunk_days - 1), end)
+        for event in await _fetch_calendar_range(market, cursor, chunk_end):
+            key = ((event.get("symbol") or "").strip().upper(), event.get("date") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(event)
+        cursor = chunk_end + timedelta(days=1)
+    return events
+
+
 @router.post("/earnings/refresh-calendar", response_model=CalendarRefreshSummary)
 async def refresh_earnings_calendar(
     market: MarketData = Depends(get_market),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_scheduler_secret),
 ):
-    """Pull the next 4 weeks of earnings events from Finnhub and upsert them."""
+    """Pull the next 4 weeks of earnings events from Finnhub and upsert them.
+
+    Fetched in weekly chunks to stay under Finnhub's 1500-row response cap
+    (see ``_fetch_calendar_chunked``). A failed chunk fails the run (502).
+    """
     today = date.today()
     end = today + timedelta(days=28)
 
     try:
-        raw_events = await market.earnings_calendar(today, end)
+        raw_events = await _fetch_calendar_chunked(market, today, end)
     except EarningsDateUnknown as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
