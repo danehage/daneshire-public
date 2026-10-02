@@ -46,6 +46,28 @@ from app.schemas.tickers import normalize_ticker
 router = APIRouter(prefix="/api/earnings", tags=["earnings"])
 
 
+# Upper bound on a /calendar or /screen date window. Both routes are
+# guest-reachable, and an unbounded range (?start=1900-01-01&end=2100-01-01)
+# serialises the whole earnings table, while /screen with min_volume
+# bulk-quotes every ticker in range against the paid FMP quota. The UI asks
+# for the next 10 trading days (~2 weeks); the API default is 28 days.
+MAX_RANGE_DAYS = 120
+DEFAULT_RANGE_DAYS = 28
+
+
+def _resolve_range(start: Optional[date], end: Optional[date]) -> tuple[date, date]:
+    """Apply defaults (today .. today+28d) and enforce ``MAX_RANGE_DAYS``."""
+    today = date.today()
+    start = start or today
+    end = end or (today + timedelta(days=DEFAULT_RANGE_DAYS))
+    if (end - start).days > MAX_RANGE_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Date range too large: at most {MAX_RANGE_DAYS} days between start and end",
+        )
+    return start, end
+
+
 # Once a trade leaves "open", the only fields that may change are
 # narrative (`notes`, `adjustments`) and the commissions column via
 # ``commission_delta``. No reopening.
@@ -156,11 +178,10 @@ async def list_earnings_calendar(
     """Return earnings events ordered by report_date ASC, joined to the
     most recent IV snapshot per ticker and historical realized-move averages.
 
-    Defaults: start = today, end = today + 28 days.
+    Defaults: start = today, end = today + 28 days. Spans over
+    ``MAX_RANGE_DAYS`` are rejected with 422.
     """
-    today = date.today()
-    start = start or today
-    end = end or (today + timedelta(days=28))
+    start, end = _resolve_range(start, end)
 
     latest_iv, avg_realized = _build_subqueries()
 
@@ -201,11 +222,10 @@ async def screen_earnings(
 
     Joins IV snapshots and historical realized-move averages. Default sort:
     edge_ratio DESC NULLS LAST, iv_rank DESC. Volume filter fetches live
-    quotes via the MarketData seam.
+    quotes via the MarketData seam. Spans over ``MAX_RANGE_DAYS`` are
+    rejected with 422.
     """
-    today = date.today()
-    start = start or today
-    end = end or (today + timedelta(days=28))
+    start, end = _resolve_range(start, end)
 
     latest_iv, avg_realized = _build_subqueries()
 

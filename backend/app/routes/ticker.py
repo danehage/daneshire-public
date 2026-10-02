@@ -44,6 +44,10 @@ router = APIRouter(prefix="/api/ticker", tags=["ticker"])
 _narrative_cache: dict[str, str] = {}
 
 
+def _narrative_cache_key(ticker: str) -> str:
+    return f"{ticker}:{_date.today()}"
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -82,10 +86,23 @@ async def get_ticker_narrative(
 
     Always returns 200. If Gemini is unavailable or fails, returns
     ``narrative_available: false`` so the frontend degrades gracefully.
+
+    Generation is owner-only: each new (ticker, day) is a paid Gemini call,
+    and this route sits under the guest-allowed ``/api/ticker`` prefix, so a
+    guest could otherwise spend on every ticker they open. Guests get a
+    narrative only if the owner already generated one today (cache read,
+    free); otherwise the same ``narrative_available: false`` shape, which
+    the UI renders as "no narrative" rather than an error.
     """
     vision_parser = getattr(request.app.state, "vision_parser", None)
 
     ticker = normalize_ticker(symbol)
+    if getattr(request.state, "role", "owner") == "guest":
+        cached = _narrative_cache.get(_narrative_cache_key(ticker))
+        return TickerNarrativeResponse(
+            ticker=ticker, narrative=cached, narrative_available=cached is not None
+        )
+
     try:
         ctx = await market.ticker_context(ticker)
     except Exception as exc:
@@ -132,7 +149,7 @@ async def _get_narrative(
 ) -> Optional[str]:
     """Return cached narrative or generate one via Gemini; None on failure."""
     today = str(_date.today())
-    cache_key = f"{ticker}:{today}"
+    cache_key = _narrative_cache_key(ticker)
     if cache_key in _narrative_cache:
         return _narrative_cache[cache_key]
 

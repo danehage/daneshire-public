@@ -202,6 +202,75 @@ async def test_guest_can_still_read_scan_metadata(auth_client):
     assert response.status_code not in (401, 403)
 
 
+# --- Gemini narrative is owner-only (paid call per new ticker/day) ---------
+
+
+class _CountingGemini:
+    def __init__(self):
+        self.calls = 0
+
+    async def generate_text(self, prompt: str) -> str:
+        self.calls += 1
+        return "Generated narrative."
+
+
+class _ContextMarket:
+    def __init__(self):
+        self.context_calls = 0
+
+    async def ticker_context(self, ticker: str) -> dict:
+        self.context_calls += 1
+        return {"ticker": ticker, "company_name": ticker, "headlines": []}
+
+
+@pytest.fixture
+def narrative_env(monkeypatch):
+    from app.routes.ticker import _narrative_cache
+
+    gemini = _CountingGemini()
+    market = _ContextMarket()
+    monkeypatch.setattr(app.state, "vision_parser", gemini, raising=False)
+    _narrative_cache.clear()
+    yield gemini, market
+    _narrative_cache.clear()
+
+
+async def test_guest_narrative_degrades_without_calling_gemini(
+    auth_client, narrative_env
+):
+    gemini, market = narrative_env
+    app.dependency_overrides[get_market] = lambda: market
+
+    response = await auth_client.get("/api/ticker/ZZZT/context/narrative", headers=GUEST)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ticker": "ZZZT",
+        "narrative": None,
+        "narrative_available": False,
+    }
+    assert gemini.calls == 0
+    assert market.context_calls == 0
+
+
+async def test_owner_narrative_generates_and_guest_reads_cache(
+    auth_client, narrative_env
+):
+    gemini, market = narrative_env
+    app.dependency_overrides[get_market] = lambda: market
+
+    owner = await auth_client.get("/api/ticker/ZZZT/context/narrative", headers=OWNER)
+    assert owner.status_code == 200
+    assert owner.json()["narrative"] == "Generated narrative."
+    assert gemini.calls == 1
+
+    # The owner already paid for today's narrative; a guest may read it free.
+    guest = await auth_client.get("/api/ticker/ZZZT/context/narrative", headers=GUEST)
+    assert guest.status_code == 200
+    assert guest.json()["narrative"] == "Generated narrative."
+    assert guest.json()["narrative_available"] is True
+    assert gemini.calls == 1
+
 # --- Response-body leaks on guest-allowed routes ----------------------------
 #
 # The middleware allowlist is path-based, so it cannot see what a permitted
