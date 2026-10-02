@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useTickerEarnings } from '../hooks/useEarnings';
+import { useRole } from '../hooks/useMe';
 
 const REPORT_TIME_LABEL = {
   bmo: 'Before market open',
@@ -243,6 +244,9 @@ function RecentTradesSection({ trades, ticker }) {
 
 export default function EarningsCard({ ticker }) {
   const { data, isLoading, error } = useTickerEarnings(ticker);
+  // Trades are the owner's personal positions; hide the section until the
+  // role is known so guests never see it (the API also returns [] for them).
+  const role = useRole();
 
   if (isLoading) {
     return (
@@ -278,9 +282,11 @@ export default function EarningsCard({ ticker }) {
             expectedMovePct={data.latest_iv_snapshot?.expected_move_pct}
           />
         </div>
-        <div className="md:col-span-2">
-          <RecentTradesSection trades={data.recent_trades} ticker={ticker} />
-        </div>
+        {role === 'owner' && (
+          <div className="md:col-span-2">
+            <RecentTradesSection trades={data.recent_trades} ticker={ticker} />
+          </div>
+        )}
       </div>
     </div>
   );

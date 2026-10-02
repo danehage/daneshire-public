@@ -4,17 +4,25 @@ Guests may reach the scanner and earnings market data; everything
 personal (watchlist, portfolio, journal, alerts, dashboard, earnings
 trades) is owner-only. These tests exercise the middleware directly —
 no database access is needed because guest-denied requests are rejected
-before any route runs.
+before any route runs. The exception is the per-ticker earnings test at
+the bottom, which seeds a trade to prove a guest-*allowed* route does not
+leak owner data in its response body.
 """
 
 import base64
+from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete, insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.main import app, auth_throttle
+from app.models.earnings import EarningsEvent
+from app.models.earnings_trades import EarningsTrade
 from app.services.market import get_market
 
 
@@ -192,3 +200,88 @@ async def test_guest_cannot_start_a_scan(auth_client):
 async def test_guest_can_still_read_scan_metadata(auth_client):
     response = await auth_client.get("/api/scan/universes", headers=GUEST)
     assert response.status_code not in (401, 403)
+
+
+# --- Response-body leaks on guest-allowed routes ----------------------------
+#
+# The middleware allowlist is path-based, so it cannot see what a permitted
+# route returns. GET /api/earnings/{ticker} is guest-reachable via the
+# /api/earnings prefix but used to embed the owner's recent earnings trades.
+
+_LEAK_TICKER = "GSTLK"
+
+
+async def _cleanup_leak_ticker(db: AsyncSession) -> None:
+    # Trades reference earnings_events via RESTRICT — delete trades first.
+    await db.execute(delete(EarningsTrade).where(EarningsTrade.ticker == _LEAK_TICKER))
+    await db.execute(delete(EarningsEvent).where(EarningsEvent.ticker == _LEAK_TICKER))
+    await db.commit()
+
+
+@pytest_asyncio.fixture
+async def seeded_trade(client: AsyncClient, db_session: AsyncSession, monkeypatch):
+    """Owner + guest credentials, plus one earnings trade on _LEAK_TICKER.
+
+    Uses the conftest ``client`` (test DB session override) rather than
+    ``auth_client``, then enables auth by setting credentials — the
+    middleware reads settings per request.
+    """
+    monkeypatch.setattr(settings, "auth_username", "dane")
+    monkeypatch.setattr(settings, "auth_password", "owner-pw")
+    monkeypatch.setattr(settings, "guest_username", "friend")
+    monkeypatch.setattr(settings, "guest_password", "guest-pw")
+
+    await _cleanup_leak_ticker(db_session)
+    today = date.today()
+    event_id = (
+        await db_session.execute(
+            insert(EarningsEvent)
+            .values(
+                ticker=_LEAK_TICKER,
+                report_date=today + timedelta(days=7),
+                report_time="amc",
+                source="finnhub",
+            )
+            .returning(EarningsEvent.id)
+        )
+    ).scalar_one()
+    await db_session.execute(
+        insert(EarningsTrade).values(
+            ticker=_LEAK_TICKER,
+            earnings_event_id=event_id,
+            structure="iron_condor",
+            is_paper=False,
+            entry_date=today,
+            expiry_date=today + timedelta(days=10),
+            short_put_strike=Decimal("190.00"),
+            long_put_strike=Decimal("185.00"),
+            short_call_strike=Decimal("210.00"),
+            long_call_strike=Decimal("215.00"),
+            entry_credit=Decimal("1.50"),
+            contracts=1,
+            commissions=Decimal("2.00"),
+            adjustments=[],
+            status="open",
+        )
+    )
+    await db_session.commit()
+    yield client
+    await _cleanup_leak_ticker(db_session)
+
+
+async def test_guest_ticker_earnings_hides_owner_trades(seeded_trade):
+    response = await seeded_trade.get(f"/api/earnings/{_LEAK_TICKER}", headers=GUEST)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recent_trades"] == []
+    # The rest of the payload is still served to guests.
+    assert body["ticker"] == _LEAK_TICKER
+    assert body["event"] is not None
+
+
+async def test_owner_ticker_earnings_still_includes_trades(seeded_trade):
+    response = await seeded_trade.get(f"/api/earnings/{_LEAK_TICKER}", headers=OWNER)
+    assert response.status_code == 200
+    trades = response.json()["recent_trades"]
+    assert len(trades) == 1
+    assert trades[0]["ticker"] == _LEAK_TICKER

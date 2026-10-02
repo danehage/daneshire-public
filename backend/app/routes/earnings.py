@@ -18,7 +18,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -498,6 +498,7 @@ _RECENT_TRADES_LIMIT = 5
 @router.get("/{ticker}", response_model=TickerEarningsResponse)
 async def get_ticker_earnings(
     ticker: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Aggregate earnings view for one ticker.
@@ -580,14 +581,19 @@ async def get_ticker_earnings(
             quarters_used=quarters_used,
         )
 
-    # 5 most recent trades for the ticker (any status).
-    trades_stmt = (
-        select(EarningsTrade)
-        .where(EarningsTrade.ticker == symbol)
-        .order_by(EarningsTrade.entry_date.desc(), EarningsTrade.created_at.desc())
-        .limit(_RECENT_TRADES_LIMIT)
-    )
-    recent_trades = (await db.execute(trades_stmt)).scalars().all()
+    # 5 most recent trades for the ticker (any status). Trades are the
+    # owner's personal positions: guests reach this route through the
+    # /api/earnings prefix allowlist, so they get an empty list instead.
+    # Role defaults to owner when unset (auth disabled), matching /api/me.
+    recent_trades: list[EarningsTrade] = []
+    if getattr(request.state, "role", "owner") != "guest":
+        trades_stmt = (
+            select(EarningsTrade)
+            .where(EarningsTrade.ticker == symbol)
+            .order_by(EarningsTrade.entry_date.desc(), EarningsTrade.created_at.desc())
+            .limit(_RECENT_TRADES_LIMIT)
+        )
+        recent_trades = list((await db.execute(trades_stmt)).scalars().all())
 
     return TickerEarningsResponse(
         ticker=symbol,
