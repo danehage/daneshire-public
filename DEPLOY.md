@@ -129,7 +129,8 @@ gcloud run deploy danecast-trades \
 
 ### Option B: Cloud Build (CI/CD)
 
-Connect your GitHub repo to Cloud Build, then pushes to `main` will auto-deploy.
+This is how production deploys today: a GitHub trigger runs `cloudbuild.yaml`
+on every push to `master` (see [Updating](#updating)).
 
 ```bash
 # Trigger a build manually
@@ -146,24 +147,16 @@ Note: For Cloud Build deploys, add secrets to the deploy step in `cloudbuild.yam
 
 ## 3. Run Database Migrations
 
-After first deploy, run Alembic migrations:
+**Automatic.** `cloudbuild.yaml` runs `alembic upgrade head` against prod
+inside the freshly built image, *before* the deploy step. If the migration
+fails, the build stops and the old revision keeps serving. This replaces the
+old manual `migrate-db` Cloud Run job, which is no longer used (none exists in
+the project).
 
+Emergency manual run from a dev machine. Double-check that the URL is really
+the one you mean to migrate:
 ```bash
-# Connect to Cloud Run instance (or run locally with prod DATABASE_URL)
-gcloud run jobs create migrate-db \
-  --image gcr.io/YOUR_PROJECT_ID/danecast-trades \
-  --region us-central1 \
-  --set-secrets "NEON_DATABASE_URL=neon-database-url:latest" \
-  --command "alembic" \
-  --args "upgrade,head"
-
-gcloud run jobs execute migrate-db --region us-central1
-```
-
-Or run locally:
-```bash
-cd backend
-NEON_DATABASE_URL="your-prod-url" alembic upgrade head
+cd backend && NEON_DATABASE_URL="your-prod-url" alembic upgrade head
 ```
 
 ---
@@ -549,12 +542,70 @@ curl ${SERVICE_URL}/api/internal/health \
 
 ## Updating
 
-Push to `main` branch triggers Cloud Build (if connected), or:
+Push to `master`. A Cloud Build GitHub trigger runs `cloudbuild.yaml` on every
+push, in this order:
 
+1. **Build** the image (frontend + backend).
+2. **Push** it to Artifact Registry as
+   `us-central1-docker.pkg.dev/daneshire/danecast-trades/app:<COMMIT_SHA>` (and `:latest`).
+3. **Migrate**: `alembic upgrade head` against prod Neon, run in that image.
+4. **Deploy** that `:<COMMIT_SHA>` image to Cloud Run as the runtime SA, with
+   100% of traffic going to the new revision.
+
+If any step fails, the later steps don't run and the previous revision keeps
+serving. Note that a failure *after* step 3 leaves the new migration applied.
+
+GitHub Actions CI (`.github/workflows/ci.yml`: backend tests, frontend build,
+dependency audit) runs **in parallel** on the same push. It does not gate the
+deploy.
+
+> If PR #93 (test gate + candidate rollout) merges, the pipeline also runs the
+> backend suite before step 3. The deploy then becomes `--no-traffic --tag candidate`,
+> followed by a smoke check of the candidate URL and `update-traffic --to-latest`.
+
+Watch a build (single line, PowerShell-safe):
 ```bash
-gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/danecast-trades
-gcloud run deploy danecast-trades --image gcr.io/YOUR_PROJECT_ID/danecast-trades --region us-central1
+gcloud builds list --limit=5 --format="table(id,status,createTime,substitutions.COMMIT_SHA)"
 ```
+
+To re-run a deploy without new code, click **Retry** on the build in the Cloud
+Build console. Avoid bare `gcloud builds submit --config cloudbuild.yaml`: a
+manual submit leaves `$COMMIT_SHA` empty, so the image tags break.
+
+---
+
+## Rolling back
+
+Cloud Run keeps old revisions, so rolling back is a traffic switch. No rebuild
+is needed.
+
+1. Find the last good revision (newest first):
+   ```bash
+   gcloud run revisions list --service danecast-trades --region us-central1
+   ```
+2. Send all traffic to it:
+   ```bash
+   gcloud run services update-traffic danecast-trades --to-revisions REV=100 --region us-central1
+   ```
+   Replace `REV` with the revision name, e.g. `danecast-trades-00123-abc`.
+
+**This pins traffic.** Later deploys still create revisions, but those
+revisions receive **no traffic** until you un-pin. After the fix is pushed and
+deployed, run:
+```bash
+gcloud run services update-traffic danecast-trades --to-latest --region us-central1
+```
+
+**Schema caveat.** A rollback reverts code, not the database. Migrations the
+bad build applied stay applied.
+- **Additive migrations** (new table, new nullable column, new index) are safe
+  to leave in place. The old code simply ignores them. This is the normal case.
+- **`alembic downgrade` is lossy.** Dropping a column or table drops its data.
+  Read the migration's `downgrade()` before running anything, and take or
+  confirm a backup first (see §4c).
+- **Prefer expand/contract** for breaking schema changes. Add the new shape
+  first and deploy code that works with both shapes. Remove the old shape in a
+  later migration, once nothing reads it. That keeps every revision rollback-safe.
 
 ---
 
