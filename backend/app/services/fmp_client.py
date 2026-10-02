@@ -128,9 +128,15 @@ class FMPClient:
         return None
 
     def _get_hist_cache_path(self, ticker: str) -> str:
-        """Get path for today's historical data cache."""
+        """Get path for today's historical data cache.
+
+        The file holds the *full* series FMP returned (oldest -> newest), so
+        any ``days`` can be served from it. The ``histfull_`` prefix keeps
+        it from ever reading an older ``hist_`` file, which held only the
+        first caller's ``days`` worth of bars.
+        """
         today = datetime.now().strftime("%Y-%m-%d")
-        return os.path.join(self.cache_dir, f"hist_{ticker}_{today}.json")
+        return os.path.join(self.cache_dir, f"histfull_{ticker}_{today}.json")
 
     def _load_hist_cache(self, ticker: str) -> Optional[list[dict]]:
         """Load cached historical data if it exists for today."""
@@ -282,13 +288,20 @@ class FMPClient:
         Fetch historical price data for a ticker.
         Returns list of daily OHLCV data, oldest to newest.
 
+        Returns at most ``days`` bars, always the *newest* ones (the list
+        ends at the most recent bar).
+
         Uses daily caching since historical data doesn't change intraday.
+        The cache holds the full series FMP returned regardless of ``days``,
+        so callers asking for different windows (252 / 700 / 1500) all get
+        a correct slice from the same file. A ticker with less history than
+        ``days`` simply returns everything there is.
         """
         # Check cache first
         if use_cache:
             cached = self._load_hist_cache(ticker)
             if cached:
-                return cached[:days] if len(cached) > days else cached
+                return cached[-days:]
 
         try:
             url = f"{self.BASE_URL}/stable/historical-price-eod/full?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
@@ -299,15 +312,16 @@ class FMPClient:
                     data = response.json()
                     hist = None
 
-                    # API returns list directly or wrapped in 'historical' key
+                    # API returns list directly or wrapped in 'historical'
+                    # key, newest-first. Cache the full series oldest-first.
                     if isinstance(data, list) and len(data) > 0:
-                        hist = list(reversed(data[:days]))
+                        hist = list(reversed(data))
                     elif isinstance(data, dict) and "historical" in data:
-                        hist = list(reversed(data["historical"][:days]))
+                        hist = list(reversed(data["historical"]))
 
                     if hist:
                         self._save_hist_cache(ticker, hist)
-                        return hist
+                        return hist[-days:]
 
                 return None
 
