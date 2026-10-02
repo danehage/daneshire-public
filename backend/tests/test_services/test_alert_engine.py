@@ -18,7 +18,7 @@ from typing import Optional
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import Alert, AlertHistory
@@ -673,3 +673,154 @@ async def test_expire_stale_alerts(db_session: AsyncSession):
     assert count == 1
     await db_session.refresh(alert)
     assert alert.status == "expired"
+
+
+# ---------------------------------------------------------------------------
+# Delivery guarantees — an alert only leaves ``active`` once its push lands
+# ---------------------------------------------------------------------------
+
+
+async def _history_for(db: AsyncSession, alert_id) -> list[AlertHistory]:
+    return list(
+        (
+            await db.execute(
+                select(AlertHistory)
+                .where(AlertHistory.alert_id == alert_id)
+                .order_by(AlertHistory.evaluated_at)
+            )
+        ).scalars().all()
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_send_leaves_alert_active_for_retry(db_session: AsyncSession):
+    alert = await _insert_alert(
+        db_session,
+        ticker="AAPL",
+        alert_type="price_cross",
+        condition={"metric": "price", "operator": ">", "value": 100},
+    )
+    market = FakeMarket(quotes_by_ticker={"AAPL": PriceQuote(ticker="AAPL", price=150.0)})
+    notifier = RecordingNotifier(succeed=False)
+    engine = AlertEngine(db_session, market=market, notifier=notifier)
+
+    summary = await engine.run("price_cross")
+
+    assert summary.met == 1
+    assert summary.notifications_sent == 0
+    assert len(notifier.calls) == 1
+    await db_session.refresh(alert)
+    assert alert.status == "active"
+    assert alert.triggered_at is None
+    history = await _history_for(db_session, alert.id)
+    assert len(history) == 1
+    assert history[0].condition_met is True
+    assert history[0].notification_sent is False
+
+    # Next scheduled run retries and, once the push lands, triggers.
+    notifier.succeed = True
+    summary = await engine.run("price_cross")
+
+    assert summary.notifications_sent == 1
+    await db_session.refresh(alert)
+    assert alert.status == "triggered"
+    assert alert.triggered_at is not None
+    history = await _history_for(db_session, alert.id)
+    assert len(history) == 2
+    assert sorted(h.notification_sent for h in history) == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_raising_notifier_leaves_alert_active(db_session: AsyncSession):
+    alert = await _insert_alert(
+        db_session,
+        ticker="AAPL",
+        alert_type="price_cross",
+        condition={"metric": "price", "operator": ">", "value": 100},
+    )
+    market = FakeMarket(quotes_by_ticker={"AAPL": PriceQuote(ticker="AAPL", price=150.0)})
+
+    async def boom(alert, condition, outcome):
+        raise TimeoutError("pushover timed out")
+
+    engine = AlertEngine(db_session, market=market, notifier=boom)
+
+    summary = await engine.run("price_cross")
+
+    assert summary.met == 1
+    assert summary.notifications_sent == 0
+    await db_session.refresh(alert)
+    assert alert.status == "active"
+    assert alert.triggered_at is None
+    history = await _history_for(db_session, alert.id)
+    assert len(history) == 1
+    assert history[0].condition_met is True
+    assert history[0].notification_sent is False
+
+
+@pytest.mark.asyncio
+async def test_successful_send_triggers_alert_once(db_session: AsyncSession):
+    alert = await _insert_alert(
+        db_session,
+        ticker="AAPL",
+        alert_type="price_cross",
+        condition={"metric": "price", "operator": ">", "value": 100},
+    )
+    market = FakeMarket(quotes_by_ticker={"AAPL": PriceQuote(ticker="AAPL", price=150.0)})
+    notifier = RecordingNotifier()
+    engine = AlertEngine(db_session, market=market, notifier=notifier)
+
+    summary = await engine.run("price_cross")
+
+    assert summary.notifications_sent == 1
+    await db_session.refresh(alert)
+    assert alert.status == "triggered"
+    history = await _history_for(db_session, alert.id)
+    assert len(history) == 1
+    assert history[0].notification_sent is True
+
+    # A second run finds nothing active and sends nothing.
+    summary = await engine.run("price_cross")
+    assert summary.met == 0
+    assert summary.notifications_sent == 0
+    assert len(notifier.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_alert_claimed_elsewhere_is_not_sent(db_session: AsyncSession):
+    """An alert that leaves ``active`` after load (an overlapping run, or the
+    user dismissing it) loses the conditional-UPDATE claim and isn't pushed."""
+    alert = await _insert_alert(
+        db_session,
+        ticker="AAPL",
+        alert_type="price_cross",
+        condition={"metric": "price", "operator": ">", "value": 100},
+    )
+    alert_id = alert.id
+
+    class RacingMarket(FakeMarket):
+        async def quotes(self, tickers):
+            # Runs after active alerts are loaded, before the claim.
+            await db_session.execute(
+                update(Alert).where(Alert.id == alert_id).values(status="dismissed")
+            )
+            await db_session.commit()
+            return await super().quotes(tickers)
+
+    market = RacingMarket(
+        quotes_by_ticker={"AAPL": PriceQuote(ticker="AAPL", price=150.0)}
+    )
+    notifier = RecordingNotifier()
+    engine = AlertEngine(db_session, market=market, notifier=notifier)
+
+    summary = await engine.run("price_cross")
+
+    assert summary.met == 1
+    assert summary.notifications_sent == 0
+    assert notifier.calls == []
+    await db_session.refresh(alert)
+    assert alert.status == "dismissed"
+    history = await _history_for(db_session, alert_id)
+    assert len(history) == 1
+    assert history[0].condition_met is True
+    assert history[0].notification_sent is False

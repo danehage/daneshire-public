@@ -9,8 +9,11 @@ Alert engine — the single evaluation path.
    an :class:`Errored` outcome from a missing / failed observation),
    invokes the typed :class:`Condition`'s pure ``evaluate``
 4. Writes one ``alert_history`` row per alert (regardless of outcome)
-5. On :class:`Met`, sends a Pushover via the injected notifier, passing
-   the typed ``Condition`` so ``.format()`` is called exactly once
+5. On :class:`Met`, atomically claims the alert (conditional UPDATE
+   active -> triggered), sends a Pushover via the injected notifier
+   (passing the typed ``Condition`` so ``.format()`` is called exactly
+   once), and reverts the alert to ``active`` if the push failed so the
+   next run retries. Each Met alert commits on its own.
 
 The four internal cron endpoints reduce to one-liner pass-throughs.
 """
@@ -144,7 +147,11 @@ class AlertEngine:
     # -- orchestrator ------------------------------------------------------
 
     async def run(self, alert_type: str) -> RunSummary:
-        """Evaluate every active alert of one type. Commits at the end."""
+        """Evaluate every active alert of one type.
+
+        Non-Met history commits before any push is sent; each Met alert
+        then commits per-alert (see ``_claim_and_notify``).
+        """
 
         if self.market is None and alert_type in ("price_cross", "technical_signal"):
             # These alert types need market data — refuse loudly rather
@@ -164,27 +171,23 @@ class AlertEngine:
             self._evaluate_one(alert, observations) for alert in alerts
         ]
 
-        notifications_sent = 0
+        # Phase 1: persist every non-Met evaluation and end the transaction
+        # that spanned the observation fetch. Nothing below sends a push
+        # while holding a long-lived transaction open.
+        to_notify: list[_AlertOutcome] = []
         for record in evaluated:
-            history = self._history_row(record)
-            self.db.add(history)
             if isinstance(record.outcome, Met) and record.condition is not None:
-                record.alert.status = "triggered"
-                record.alert.triggered_at = self._now()
-                try:
-                    sent = await self.notifier(
-                        record.alert, record.condition, record.outcome
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.error(
-                        "notifier failed for alert %s: %s", record.alert.id, exc
-                    )
-                    sent = False
-                if sent:
-                    history.notification_sent = True
-                    notifications_sent += 1
-
+                to_notify.append(record)
+            else:
+                self.db.add(self._history_row(record))
         await self.db.commit()
+
+        # Phase 2: one short transaction per Met alert, so a later DB
+        # failure can't roll back state for pushes already delivered.
+        notifications_sent = 0
+        for record in to_notify:
+            if await self._claim_and_notify(record):
+                notifications_sent += 1
 
         return RunSummary(
             alert_type=alert_type,
@@ -211,6 +214,67 @@ class AlertEngine:
         return summary
 
     # -- internals ---------------------------------------------------------
+
+    async def _claim_and_notify(self, record: _AlertOutcome) -> bool:
+        """Claim one Met alert, push it, and keep it active if the push fails.
+
+        1. Claim: ``UPDATE alerts SET status='triggered' WHERE id=:id AND
+           status='active'`` committed together with the history row. A
+           rowcount of 0 means an overlapping run (or a user dismiss)
+           already moved the alert, so we don't send a duplicate.
+        2. Send via the notifier.
+        3. On success, mark the history row ``notification_sent``. On
+           failure (False or raised), revert the claim to ``active`` so the
+           next scheduled run retries the push.
+
+        DB errors propagate: earlier alerts in the batch are already
+        committed, and an alert claimed but not yet sent stays claimed
+        rather than risking a duplicate push.
+        """
+        alert = record.alert
+        assert record.condition is not None
+        alert_id = alert.id
+        history = self._history_row(record)
+        self.db.add(history)
+
+        claim = await self.db.execute(
+            update(Alert)
+            .where(Alert.id == alert_id)
+            .where(Alert.status == "active")
+            .values(status="triggered", triggered_at=self._now())
+        )
+        if claim.rowcount != 1:
+            history.notes = "alert no longer active (claimed by a concurrent run)"
+            await self.db.commit()
+            logger.info("alert %s already claimed; skipping notification", alert_id)
+            return False
+        await self.db.commit()
+
+        try:
+            sent = await self.notifier(alert, record.condition, record.outcome)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("notifier raised for alert %s: %s", alert_id, exc)
+            sent = False
+
+        if sent:
+            history.notification_sent = True
+            await self.db.commit()
+            return True
+
+        logger.warning(
+            "notification for alert %s not delivered; leaving alert active "
+            "so the next run retries",
+            alert_id,
+        )
+        await self.db.execute(
+            update(Alert)
+            .where(Alert.id == alert_id)
+            .where(Alert.status == "triggered")
+            .values(status="active", triggered_at=None)
+        )
+        history.notes = "notification failed; alert left active for retry"
+        await self.db.commit()
+        return False
 
     async def _observations_for(
         self, alert_type: str, alerts: list[Alert]
