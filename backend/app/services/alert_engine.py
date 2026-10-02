@@ -389,6 +389,10 @@ class AlertEngine:
 
         # Date reminders gate on today's date before invoking the pure
         # evaluator — this keeps ReminderCondition.evaluate I/O-free.
+        # ``<=`` (not ``==``) so a reminder whose day was missed — created
+        # after that morning's run, or the job failed — fires on the next
+        # run instead of sitting active forever. Still fires once: a Met
+        # outcome flips the alert to ``triggered``.
         if isinstance(condition, ReminderCondition):
             today = self._now().date()
             trigger = condition.trigger_date_parsed
@@ -400,7 +404,7 @@ class AlertEngine:
                         reason=f"unparseable trigger_date: {condition.trigger_date}"
                     ),
                 )
-            if trigger != today:
+            if trigger > today:
                 return _AlertOutcome(
                     alert=alert,
                     condition=condition,

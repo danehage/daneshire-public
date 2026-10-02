@@ -335,7 +335,7 @@ POST /api/internal/alerts/run-earnings-checks
 
 POST /api/internal/alerts/run-reminders
      → daily at 8:00 AM ET
-     → fires any date_reminder alerts whose date matches today
+     → fires any date_reminder alerts whose date is today or earlier (missed days catch up)
 
 POST /api/internal/alerts/expire-stale
      → daily at midnight

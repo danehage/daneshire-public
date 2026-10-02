@@ -21,11 +21,53 @@ const ALERT_TYPES = [
   { value: "date_reminder", label: "Date Reminder" },
 ];
 
-const METRICS = [
-  { value: "price", label: "Price" },
-  { value: "rsi", label: "RSI" },
-  { value: "hv_rank", label: "HV Rank" },
-];
+// Metrics the backend accepts per alert type. Source of truth:
+// backend/app/schemas/alert_conditions.py — PriceCondition.metric is
+// Literal["price"]; TechnicalCondition.metric is TechnicalMetric. Conditions
+// use extra="forbid", so anything not listed here is a 422. Keep in sync.
+// earnings_iv and date_reminder have no metric choice (see buildCondition).
+const METRICS_BY_TYPE = {
+  price_cross: [{ value: "price", label: "Price" }],
+  technical_signal: [
+    { value: "rsi", label: "RSI" },
+    { value: "hv_rank", label: "HV Rank" },
+    { value: "current_hv", label: "Current HV" },
+    { value: "range_position", label: "52W Range Position" },
+    { value: "momentum_10d", label: "10D Momentum %" },
+    { value: "volume_ratio", label: "Volume Ratio" },
+    { value: "volume_pace", label: "Volume Pace" },
+    { value: "dist_50", label: "Dist. from 50 MA" },
+    { value: "dist_200", label: "Dist. from 200 MA" },
+    { value: "ma_slope", label: "MA Slope" },
+    { value: "change", label: "Day Change $" },
+    { value: "change_pct", label: "Day Change %" },
+    { value: "volume", label: "Volume" },
+  ],
+};
+
+// Build the JSONB condition payload for each alert type; shapes must match
+// the variants in backend/app/schemas/alert_conditions.py.
+function buildCondition({ alertType, metric, operator, value, daysBefore, triggerDate }) {
+  switch (alertType) {
+    case "earnings_iv":
+      return {
+        value: parseFloat(value),
+        days_before: parseInt(daysBefore, 10),
+        operator,
+      };
+    case "date_reminder":
+      return { metric: "reminder", trigger_date: triggerDate };
+    default:
+      return { metric, operator, value: parseFloat(value) };
+  }
+}
+
+function todayISO() {
+  // Local calendar date as YYYY-MM-DD (toISOString would use UTC).
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 const OPERATORS = [
   { value: ">", label: ">" },
@@ -76,28 +118,43 @@ function CreateAlertForm({ onClose }) {
   const [operator, setOperator] = useState(">");
   const [value, setValue] = useState("");
   const [daysBefore, setDaysBefore] = useState("5");
+  const [triggerDate, setTriggerDate] = useState(todayISO);
   const [actionNote, setActionNote] = useState("");
   const [priority, setPriority] = useState("normal");
 
   const createAlert = useCreateAlert();
   const isEarningsIV = alertType === "earnings_iv";
+  const isReminder = alertType === "date_reminder";
+  const metricOptions = METRICS_BY_TYPE[alertType] || [];
+
+  const handleAlertTypeChange = (nextType) => {
+    setAlertType(nextType);
+    // Reset metric to one valid for the new type so we never send a
+    // metric the backend rejects (e.g. technical_signal + price).
+    const options = METRICS_BY_TYPE[nextType];
+    if (options && !options.some((m) => m.value === metric)) {
+      setMetric(options[0].value);
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!ticker.trim() || !name.trim() || !value) return;
+    if (!ticker.trim() || !name.trim()) return;
+    if (isReminder) {
+      if (!triggerDate) return;
+    } else if (value === "") {
+      return;
+    }
     if (isEarningsIV && daysBefore === "") return;
 
-    const condition = isEarningsIV
-      ? {
-          value: parseFloat(value),
-          days_before: parseInt(daysBefore, 10),
-          operator,
-        }
-      : {
-          metric,
-          operator,
-          value: parseFloat(value),
-        };
+    const condition = buildCondition({
+      alertType,
+      metric,
+      operator,
+      value,
+      daysBefore,
+      triggerDate,
+    });
 
     createAlert.mutate(
       {
@@ -157,7 +214,7 @@ function CreateAlertForm({ onClose }) {
           </label>
           <select
             value={alertType}
-            onChange={(e) => setAlertType(e.target.value)}
+            onChange={(e) => handleAlertTypeChange(e.target.value)}
             className="w-full px-3 py-2 border-2 border-ink bg-warm-white"
           >
             {ALERT_TYPES.map((t) => (
@@ -169,77 +226,98 @@ function CreateAlertForm({ onClose }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-4">
-        {isEarningsIV ? (
+      {isReminder ? (
+        <div className="grid grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
-              Days Before
+              Remind On
             </label>
             <input
-              type="number"
-              min="0"
-              max="60"
-              step="1"
-              value={daysBefore}
-              onChange={(e) => setDaysBefore(e.target.value)}
-              placeholder="5"
+              type="date"
+              value={triggerDate}
+              onChange={(e) => setTriggerDate(e.target.value)}
               className="w-full px-3 py-2 border-2 border-ink bg-warm-white font-mono"
               required
             />
           </div>
-        ) : (
+          <p className="col-span-2 self-end text-xs text-mid-brown pb-2">
+            Fires on the 8 AM ET reminder run on or after this date.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-4 mb-4">
+          {isEarningsIV ? (
+            <div>
+              <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
+                Days Before
+              </label>
+              <input
+                type="number"
+                min="0"
+                max="60"
+                step="1"
+                value={daysBefore}
+                onChange={(e) => setDaysBefore(e.target.value)}
+                placeholder="5"
+                className="w-full px-3 py-2 border-2 border-ink bg-warm-white font-mono"
+                required
+              />
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
+                Metric
+              </label>
+              <select
+                value={metric}
+                onChange={(e) => setMetric(e.target.value)}
+                disabled={metricOptions.length === 1}
+                className="w-full px-3 py-2 border-2 border-ink bg-warm-white disabled:bg-cream disabled:text-mid-brown"
+              >
+                {metricOptions.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
-              Metric
+              Operator
             </label>
             <select
-              value={metric}
-              onChange={(e) => setMetric(e.target.value)}
+              value={operator}
+              onChange={(e) => setOperator(e.target.value)}
               className="w-full px-3 py-2 border-2 border-ink bg-warm-white"
             >
-              {METRICS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
+              {OPERATORS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
                 </option>
               ))}
             </select>
           </div>
-        )}
 
-        <div>
-          <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
-            Operator
-          </label>
-          <select
-            value={operator}
-            onChange={(e) => setOperator(e.target.value)}
-            className="w-full px-3 py-2 border-2 border-ink bg-warm-white"
-          >
-            {OPERATORS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+          <div>
+            <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
+              {isEarningsIV ? "IV Rank" : "Value"}
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={
+                isEarningsIV ? "60" : metric === "price" ? "200.00" : "30"
+              }
+              className="w-full px-3 py-2 border-2 border-ink bg-warm-white font-mono"
+              required
+            />
+          </div>
         </div>
-
-        <div>
-          <label className="block text-xs font-medium uppercase tracking-wide text-dark-brown mb-1">
-            {isEarningsIV ? "IV Rank" : "Value"}
-          </label>
-          <input
-            type="number"
-            step="any"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={
-              isEarningsIV ? "60" : metric === "price" ? "200.00" : "30"
-            }
-            className="w-full px-3 py-2 border-2 border-ink bg-warm-white font-mono"
-            required
-          />
-        </div>
-      </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
         <div className="md:col-span-3">

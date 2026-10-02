@@ -362,7 +362,28 @@ async def test_run_date_reminder_today_triggers(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_run_date_reminder_other_day_not_met(db_session: AsyncSession):
+async def test_run_date_reminder_future_day_not_met(db_session: AsyncSession):
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    await _insert_alert(
+        db_session,
+        ticker="AAPL",
+        alert_type="date_reminder",
+        condition={"trigger_date": tomorrow.isoformat()},
+    )
+    notifier = RecordingNotifier()
+    engine = AlertEngine(db_session, market=FakeMarket(), notifier=notifier)
+
+    summary = await engine.run("date_reminder")
+
+    assert summary.met == 0
+    assert summary.not_met == 1
+    assert summary.notifications_sent == 0
+
+
+@pytest.mark.asyncio
+async def test_run_date_reminder_missed_day_fires_once(db_session: AsyncSession):
+    """A reminder whose day passed without a run (created after the 08:00
+    job, or the job failed) fires on the next run, then not again."""
     yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
     await _insert_alert(
         db_session,
@@ -373,11 +394,13 @@ async def test_run_date_reminder_other_day_not_met(db_session: AsyncSession):
     notifier = RecordingNotifier()
     engine = AlertEngine(db_session, market=FakeMarket(), notifier=notifier)
 
-    summary = await engine.run("date_reminder")
+    first = await engine.run("date_reminder")
+    second = await engine.run("date_reminder")
 
-    assert summary.met == 0
-    assert summary.not_met == 1
-    assert summary.notifications_sent == 0
+    assert first.met == 1
+    assert first.notifications_sent == 1
+    assert len(second.outcomes) == 0
+    assert second.notifications_sent == 0
 
 
 class TestEarningsExpectedMoveCondition:

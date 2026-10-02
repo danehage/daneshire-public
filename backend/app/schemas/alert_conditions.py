@@ -211,7 +211,8 @@ class EarningsExpectedMoveCondition(_ConditionBase):
 
 class ReminderCondition(_ConditionBase):
     """Date-only reminder. Observation is ``None``; the orchestrator
-    decides "is today the trigger day?" and only invokes ``.evaluate``
+    decides "has the trigger day arrived?" (``trigger_date <= today``, so
+    missed days catch up on the next run) and only invokes ``.evaluate``
     when the answer is yes."""
 
     metric: Literal["reminder"] = "reminder"
@@ -219,7 +220,7 @@ class ReminderCondition(_ConditionBase):
 
     def evaluate(self, observation: None = None) -> EvalResult:
         # When the orchestrator invokes evaluate on a reminder, the
-        # gating logic (today == trigger_date) has already passed.
+        # gating logic (trigger_date <= today) has already passed.
         return Met(actual_value=None)
 
     def format(self) -> str:
