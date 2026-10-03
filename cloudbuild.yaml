@@ -102,6 +102,10 @@ steps:
       - '-c'
       - |
         set -e
+        # The image runs as the non-root `app` user, which can't write to
+        # /workspace; tests create cache dirs (e.g. scanner_cache) relative
+        # to CWD. Run from a writable copy instead.
+        cp -r . /tmp/backend && cd /tmp/backend
         if [ -f requirements-dev.lock ]; then
           pip install -q --no-cache-dir --require-hashes --target /tmp/devdeps -r requirements-dev.lock
           export PYTHONPATH="/tmp/devdeps$${PYTHONPATH:+:$$PYTHONPATH}"
