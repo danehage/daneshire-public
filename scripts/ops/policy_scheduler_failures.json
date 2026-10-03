@@ -1,0 +1,26 @@
+{
+  "displayName": "Cloud Scheduler job failed",
+  "documentation": {
+    "content": "A Cloud Scheduler job logged a failed attempt (severity>=ERROR on resource.type=cloud_scheduler_job). Common causes: 401 UNAUTHENTICATED (the job header holds a stale X-Scheduler-Secret, e.g. after a rotation), 504 DEADLINE_EXCEEDED (attempt deadline below the endpoint's runtime), 5xx from the endpoint.\n\nCheck: `gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND severity>=ERROR' --project=daneshire --freshness=1d --format=\"value(timestamp,resource.labels.job_id,jsonPayload.status,httpRequest.status)\"`\n\nSee scripts/ops/README.md.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Scheduler attempt finished with an error",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_scheduler_job\" AND severity>=ERROR",
+        "labelExtractors": {
+          "job_id": "EXTRACT(resource.labels.job_id)",
+          "status": "EXTRACT(jsonPayload.status)"
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": { "period": "3600s" },
+    "autoClose": "86400s"
+  },
+  "notificationChannels": ["__CHANNEL__"],
+  "enabled": true
+}

@@ -15,7 +15,7 @@ Specifically:
 - `POST /api/internal/alerts/run-earnings-checks` — daily 17:00 ET (after snapshots)
 - `POST /api/internal/earnings/backfill-realized-moves` — manual/one-shot, same auth
 
-All four use the existing `verify_scheduler_secret()` dependency from `backend/app/routes/internal.py`. Development bypass (skip auth when `ENVIRONMENT=development` and `SCHEDULER_SECRET` unset) inherits unchanged. Errors return non-2xx so Cloud Scheduler retries per its existing policy.
+All four use the existing `verify_scheduler_secret()` dependency from `backend/app/routes/internal.py`. Development bypass (skip auth when `ENVIRONMENT=development` and `SCHEDULER_SECRET` unset) inherits unchanged. Errors return non-2xx so Cloud Scheduler records a failed attempt. Jobs default to 0 retries; retries and deadlines are set per job, only where the endpoint is idempotent (`scripts/ops/scheduler_hardening.sh`).
 
 ## Considered options
 

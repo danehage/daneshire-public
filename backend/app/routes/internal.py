@@ -1037,8 +1037,9 @@ async def run_db_backup(
 ):
     """Dump the production Neon database and upload it to GCS.
 
-    Cloud Scheduler calls this nightly. A non-2xx response causes
-    Cloud Scheduler to mark the execution as failed and retry.
+    Cloud Scheduler calls this nightly. A non-2xx response marks the
+    execution as failed. The job has no retries, because a same-day re-run
+    500s by design: the runtime SA cannot overwrite the day's object.
     """
     if not settings.gcs_backup_bucket:
         raise HTTPException(status_code=400, detail="GCS_BACKUP_BUCKET not configured")
