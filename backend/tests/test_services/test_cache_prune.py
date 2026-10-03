@@ -21,14 +21,15 @@ def _touch(dir_, name):
     return p
 
 
-def test_prunes_files_dated_before_today(tmp_path):
+def test_prunes_files_dated_before_yesterday(tmp_path):
     today = date(2026, 10, 2)
     old = [
-        _touch(tmp_path, "stage1_sp500_2026-10-01.json"),
-        _touch(tmp_path, "hist_AAPL_2026-09-30.json"),
+        _touch(tmp_path, "stage1_sp500_2026-09-30.json"),
+        _touch(tmp_path, "hist_AAPL_2026-09-29.json"),
         _touch(tmp_path, "histfull_MSFT_2025-12-31.json"),  # any prefix
     ]
     keep = [
+        _touch(tmp_path, "stage1_sp500_2026-10-01.json"),  # yesterday
         _touch(tmp_path, "stage1_sp500_2026-10-02.json"),
         _touch(tmp_path, "hist_AAPL_2026-10-02.json"),
         _touch(tmp_path, "notes.json"),  # no date suffix
@@ -40,6 +41,14 @@ def test_prunes_files_dated_before_today(tmp_path):
     assert removed == 3
     assert not any(p.exists() for p in old)
     assert all(p.exists() for p in keep)
+
+
+def test_prune_keeps_et_dated_file_after_utc_midnight(tmp_path):
+    """23:17 ET on Oct 2 is Oct 3 in UTC: the scan cache is dated 10-02 (ET)
+    while the server's date is 10-03. It must survive the prune."""
+    et_file = _touch(tmp_path, "stage1_sp500_2026-10-02.json")
+    assert prune_dated_cache_files(str(tmp_path), today=date(2026, 10, 3)) == 0
+    assert et_file.exists()
 
 
 def test_prune_leaves_directories_alone(tmp_path):

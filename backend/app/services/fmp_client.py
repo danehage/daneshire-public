@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from urllib.parse import parse_qs, quote as urlquote, urlsplit
@@ -27,22 +27,29 @@ _DATED_CACHE_RE = re.compile(r"_(\d{4}-\d{2}-\d{2})\.json$")
 
 
 def prune_dated_cache_files(cache_dir: str, today: Optional[date] = None) -> int:
-    """Delete ``*_<date>.json`` files in ``cache_dir`` dated before ``today``.
+    """Delete ``*_<date>.json`` files in ``cache_dir`` dated before yesterday.
 
     These caches are only ever read for the current day, but nothing deleted
     old ones. On Cloud Run the filesystem is in-memory and counts against the
     instance's 512Mi, so a long-lived instance accumulated every day's files.
+
+    Yesterday is kept on purpose: writers date their files in different
+    zones (the Stage-1 scan cache uses the ET date, this client's history
+    cache the server's UTC date). Between 20:00 and 24:00 ET the UTC date is
+    already tomorrow, so a strict "before today" cut deleted the scan cache
+    the moment it was written. One extra day on disk is cheap.
+
     One ``os.scandir`` pass; never raises (pruning is best-effort). Returns
     the number of files removed.
     """
-    today_str = (today or datetime.now().date()).isoformat()
+    cutoff_str = ((today or datetime.now().date()) - timedelta(days=1)).isoformat()
     removed = 0
     try:
         with os.scandir(cache_dir) as it:
             for entry in it:
                 m = _DATED_CACHE_RE.search(entry.name)
                 # ISO dates compare correctly as strings.
-                if m is None or m.group(1) >= today_str:
+                if m is None or m.group(1) >= cutoff_str:
                     continue
                 try:
                     if entry.is_file(follow_symlinks=False):
