@@ -6,8 +6,31 @@ substitutions:
   _REPO: danecast-trades
 
 steps:
+  # Throwaway Postgres 16 for the test gate below. `waitFor: ['-']` starts it
+  # at the beginning of the build, in parallel with the image build, so it is
+  # long since ready by the time the tests run. It joins the `cloudbuild`
+  # network that every step runs on, so later steps reach it as host `pg`.
+  # Nothing is persisted; the container dies with the build VM.
+  - id: 'test-db'
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['-']
+    args:
+      - 'run'
+      - '-d'
+      - '--name'
+      - 'pg'
+      - '--network'
+      - 'cloudbuild'
+      - '-e'
+      - 'POSTGRES_PASSWORD=postgres'
+      - '-e'
+      - 'POSTGRES_DB=danecast_test'
+      - 'postgres:16'
+
   # Build the Docker image
-  - name: 'gcr.io/cloud-builders/docker'
+  - id: 'build'
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['-']
     args:
       - 'build'
       - '-t'
@@ -17,15 +40,78 @@ steps:
       - '.'
 
   # Push to Artifact Registry
-  - name: 'gcr.io/cloud-builders/docker'
+  - id: 'push-sha'
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['build']
     args:
       - 'push'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
 
-  - name: 'gcr.io/cloud-builders/docker'
+  - id: 'push-latest'
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['push-sha']
     args:
       - 'push'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest'
+
+  # Wait for the throwaway Postgres to accept TCP connections (max ~60s).
+  # The official image's init phase runs a socket-only server, so a TCP
+  # pg_isready from another container only succeeds once the real server is up.
+  - id: 'test-db-ready'
+    name: 'postgres:16'
+    waitFor: ['test-db']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        for i in $$(seq 1 30); do
+          pg_isready -h pg -p 5432 -U postgres -d danecast_test && exit 0
+          sleep 2
+        done
+        echo "Throwaway Postgres never became ready" >&2
+        exit 1
+
+  # TEST GATE: run the backend suite before prod is migrated or deployed. A
+  # red suite fails the build here and the old revision keeps serving.
+  #
+  # Mirrors .github/workflows/ci.yml's backend job: same env, `alembic
+  # upgrade head` on the empty test DB, then `pytest tests/ -q`, both from
+  # backend/. The production image excludes backend/tests (.dockerignore),
+  # so the step runs IN the freshly built image (exact hash-pinned prod deps,
+  # same Python) against the checked-out source in /workspace/backend: the
+  # same commit the image was built from. tests/__init__.py makes pytest put
+  # backend/ on sys.path, so `app` resolves to /workspace/backend/app.
+  #
+  # Test tooling is not assumed to be in the image: when
+  # backend/requirements-dev.lock exists (pytest & co., hash-pinned) it is
+  # installed with --target into /tmp/devdeps and put on PYTHONPATH. That
+  # works when the image runs as a non-root user (no site-packages write
+  # access needed), and while pytest still lives in requirements.lock (no dev
+  # lock, nothing installed, the image's own pytest is used). pytest is
+  # invoked as `python -m pytest` so either location resolves; the cache
+  # provider is off because /workspace may not be writable by that user.
+  #
+  # Only plain `env` is set, no secretEnv, so the prod NEON_DATABASE_URL is
+  # never visible here, and ENVIRONMENT=test keeps conftest's prod guard happy.
+  - id: 'test'
+    name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
+    waitFor: ['push-latest', 'test-db-ready']
+    dir: 'backend'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        if [ -f requirements-dev.lock ]; then
+          pip install -q --no-cache-dir --require-hashes --target /tmp/devdeps -r requirements-dev.lock
+          export PYTHONPATH="/tmp/devdeps$${PYTHONPATH:+:$$PYTHONPATH}"
+        fi
+        alembic upgrade head
+        python -m pytest tests/ -q -p no:cacheprovider
+    env:
+      - 'NEON_DATABASE_URL=postgresql+asyncpg://postgres:postgres@pg:5432/danecast_test?sslmode=disable'
+      - 'FMP_API_KEY=ci-placeholder-not-a-real-key'
+      - 'ENVIRONMENT=test'
 
   # Apply database migrations BEFORE deploying new code, so the schema is ready
   # by the time the new revision serves traffic. Runs in the freshly-built image
@@ -36,14 +122,20 @@ steps:
   # `cd /app` is required: Cloud Build overrides the image's WORKDIR and runs
   # the step from /workspace, where alembic can't find alembic.ini (and the
   # `app` package isn't importable). Running from /app fixes both.
-  - name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
+  - id: 'migrate'
+    name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
+    waitFor: ['test']
     entrypoint: 'sh'
     args: ['-c', 'cd /app && alembic upgrade head']
     secretEnv: ['NEON_DATABASE_URL']
 
-  # Deploy to Cloud Run
+  # Deploy to Cloud Run as a CANDIDATE: the new revision is created and gets
+  # the `candidate` tag URL, but receives 0% of live traffic. Traffic moves
+  # only after the smoke step below passes.
   # NOTE: Secrets must be created in Secret Manager first (see DEPLOY.md)
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  - id: 'deploy'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    waitFor: ['migrate']
     entrypoint: 'gcloud'
     args:
       - 'run'
@@ -82,6 +174,58 @@ steps:
       - '--no-cpu-throttling'
       - '--timeout'
       - '3600'
+      - '--no-traffic'
+      - '--tag'
+      - 'candidate'
+
+  # SMOKE: hit the candidate revision directly through its tag URL. Checks
+  # /api/health (public) and /api/health/db (Basic Auth, owner credentials
+  # from Secret Manager; proves the new revision reaches Neon with its runtime
+  # secrets). Retries cover the scale-from-zero cold start. If it never
+  # passes, the build fails and live traffic stays on the old revision.
+  # Credentials only reach curl -u; xtrace is off and curl runs silent, so
+  # nothing echoes them into the build log.
+  - id: 'smoke'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    waitFor: ['deploy']
+    entrypoint: 'bash'
+    secretEnv: ['AUTH_USERNAME', 'AUTH_PASSWORD']
+    args:
+      - '-c'
+      - |
+        set +x
+        set -eu
+        URL=$$(gcloud run services describe danecast-trades --region us-central1 --format=json | python3 -c "import json,sys; print(next(t['url'] for t in json.load(sys.stdin)['status'].get('traffic', []) if t.get('tag') == 'candidate'))")
+        echo "Candidate URL: $$URL"
+        check() {
+          for i in $$(seq 1 10); do
+            if curl -fsS --max-time 30 -o /dev/null "$$@"; then return 0; fi
+            echo "  attempt $$i failed; retrying in 6s"
+            sleep 6
+          done
+          return 1
+        }
+        echo "GET /api/health"
+        check "$$URL/api/health"
+        echo "GET /api/health/db (owner auth)"
+        check -u "$$AUTH_USERNAME:$$AUTH_PASSWORD" "$$URL/api/health/db"
+        echo "Candidate healthy"
+
+  # PROMOTE: send 100% of traffic to the newest revision (the candidate that
+  # just passed smoke). This also un-pins traffic if a manual rollback pinned
+  # it to a specific revision (see DEPLOY.md "Rolling back").
+  - id: 'promote'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    waitFor: ['smoke']
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'services'
+      - 'update-traffic'
+      - 'danecast-trades'
+      - '--to-latest'
+      - '--region'
+      - 'us-central1'
 
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA'
@@ -91,6 +235,12 @@ availableSecrets:
   secretManager:
     - versionName: projects/$PROJECT_ID/secrets/neon-database-url/versions/latest
       env: 'NEON_DATABASE_URL'
+    # Owner credentials for the smoke step's /api/health/db check. Both
+    # secrets already exist (the deploy step's --set-secrets uses them).
+    - versionName: projects/$PROJECT_ID/secrets/auth-username/versions/latest
+      env: 'AUTH_USERNAME'
+    - versionName: projects/$PROJECT_ID/secrets/auth-password/versions/latest
+      env: 'AUTH_PASSWORD'
 
 options:
   logging: CLOUD_LOGGING_ONLY
