@@ -12,11 +12,25 @@ from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import pandas as pd
+import pytz
 
 from app.services.fmp_client import FMPClient, prune_dated_cache_files
 from app.services.indicators import TechnicalIndicators
 
 logger = logging.getLogger(__name__)
+
+# Stage-1 cache files roll over on the US-equity trading date, not the
+# container's clock (UTC on Cloud Run would roll at 8pm ET). pytz rather
+# than zoneinfo: the slim runtime image may not ship system tzdata.
+_ET = pytz.timezone("America/New_York")
+
+
+def _passes_stage1(quote: dict) -> bool:
+    """Stage-1 filter: quality names only (Daneshire thesis: higher-priced stocks)."""
+    price = quote.get("price", 0) or 0
+    volume = quote.get("volume", 0) or 0
+    market_cap = quote.get("marketCap", 0) or 0
+    return price >= 20 and volume > 10000 and market_cap > 1_000_000_000
 
 
 class StockScanner:
@@ -51,7 +65,7 @@ class StockScanner:
 
     def _get_cache_path(self, cache_name: str) -> str:
         """Get path for today's cache file."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(_ET).strftime("%Y-%m-%d")
         return os.path.join(self.cache_dir, f"{cache_name}_{today}.json")
 
     def _load_cache(self, cache_name: str) -> Optional[dict]:
@@ -67,6 +81,19 @@ class StockScanner:
         cache_path = self._get_cache_path(cache_name)
         with open(cache_path, "w") as f:
             json.dump(data, f)
+
+    @staticmethod
+    def _cached_survivor_tickers(cache_data: dict) -> list[str]:
+        """Survivor tickers from a Stage-1 cache file.
+
+        Current format is ``{"tickers": [...]}``. Files written before the
+        fresh-quote fix mapped ticker -> quote; only their keys are used, so
+        a same-day legacy file never feeds stale quotes into Stage 2.
+        """
+        tickers = cache_data.get("tickers")
+        if isinstance(tickers, list):
+            return [t for t in tickers if isinstance(t, str)]
+        return list(cache_data.keys())
 
     async def _process_ticker(self, ticker: str, quote: dict) -> Optional[dict]:
         """
@@ -303,7 +330,7 @@ class StockScanner:
         """
         Run a full scan on the given ticker list.
 
-        Stage 1: Fast filter using cached quotes
+        Stage 1: Fast filter (cached survivor list, always-fresh quotes)
         Stage 2: Deep analysis with historical data — each ticker is scored
                  the moment its analysis completes (scoring is per-ticker),
                  so partial results are readable mid-scan (issue #53)
@@ -312,7 +339,8 @@ class StockScanner:
         Args:
             tickers: List of ticker symbols to scan
             progress_callback: Optional async callback for progress updates
-            use_cache: Whether to use cached Stage 1 data
+            use_cache: Whether to reuse today's cached Stage 1 survivor
+                list (their quotes are always refetched)
             universe: Universe name for cache key
             results_out: Optional caller-owned list; scored results are
                 appended as they land so the caller can serve partials
@@ -332,13 +360,28 @@ class StockScanner:
             prune_dated_cache_files(client_cache_dir)
 
         # Stage 1: Fast filter
-        survivors = {}
+        #
+        # The cache holds only the *list* of Stage-1 survivors, never their
+        # quotes. Quote price/volume are intraday values: reusing a 9:45am
+        # quote at 3pm made Stage 2 score stale prices and divide morning
+        # volume by the 3pm elapsed-session fraction (understated volume
+        # pace, still flagged reliable). On a cache hit we refetch fresh
+        # quotes for just the survivors -- one bulk call over the survivor
+        # set instead of the whole universe.
+        survivors: dict[str, dict] = {}
 
         if use_cache:
             cache_data = self._load_cache(cache_key)
             if cache_data:
-                survivors = cache_data
-                logger.info(f"Loaded {len(survivors)} stocks from {universe} cache")
+                cached_tickers = self._cached_survivor_tickers(cache_data)
+                if cached_tickers:
+                    fresh = await self.client.get_batch_quotes(cached_tickers)
+                    survivors = {t: q for t, q in fresh.items() if _passes_stage1(q)}
+                    logger.info(
+                        f"Loaded {len(cached_tickers)} Stage 1 survivors from "
+                        f"{universe} cache; refetched {len(fresh)} fresh quotes, "
+                        f"{len(survivors)} still pass"
+                    )
 
         if not survivors:
             logger.info(f"Fetching quotes for {len(tickers)} stocks...")
@@ -347,12 +390,7 @@ class StockScanner:
 
             # Apply Stage 1 filters
             for ticker, quote in all_quotes.items():
-                price = quote.get("price", 0)
-                volume = quote.get("volume", 0)
-                market_cap = quote.get("marketCap", 0)
-
-                # Basic filters: quality names only (Daneshire thesis: higher-priced stocks)
-                if price >= 20 and volume > 10000 and market_cap > 1_000_000_000:
+                if _passes_stage1(quote):
                     survivors[ticker] = quote
 
             logger.info(f"{len(survivors)} stocks passed Stage 1 filters")
@@ -363,7 +401,7 @@ class StockScanner:
             # of the day.
             coverage = len(all_quotes) / len(tickers) if tickers else 0.0
             if coverage >= 0.9:
-                self._save_cache(cache_key, survivors)
+                self._save_cache(cache_key, {"tickers": sorted(survivors)})
             else:
                 logger.warning(
                     f"Quote coverage only {coverage:.0%} of universe; "
