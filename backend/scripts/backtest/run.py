@@ -33,7 +33,8 @@ def main(argv=None) -> int:
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--check-plan", action="store_true")
     ap.add_argument("--fetch", action="store_true")
-    ap.add_argument("--universe", choices=["pit500", "current900"], default="pit500")
+    ap.add_argument("--universe", choices=["pit500public", "pit500", "current900"], default="pit500public",
+                    help="pit500public: public daily membership file (default; our FMP plan 402s on pit500)")
     ap.add_argument("--start", type=date.fromisoformat, default=date(2016, 1, 1))
     ap.add_argument("--end", type=date.fromisoformat, default=date.today())
     ap.add_argument("--oos-start", type=date.fromisoformat, default=date(2021, 1, 1))

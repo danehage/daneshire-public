@@ -63,8 +63,11 @@ python -m scripts.backtest.run                # 3. weekly replay 2016 -> today, 
   - AAPL's oldest `weightedAverageShsOutDil` (printed on the income
     statement row) is split-adjusted (~26B; verified 2026-10-05). The
     market-cap fallback relies on that, so recheck if FMP changes it.
-- **If historical constituents are missing,** run with
-  `--universe current900`. The report labels that run survivorship-biased.
+- **Historical constituents:** our FMP plan returns 402 for them (checked
+  2026-10-05), so the default `--universe pit500public` reads the pinned
+  public membership file (ADR-0007 amendment). After `--fetch`, check the
+  report's missing-symbol count, especially renamed tickers like FB.
+  `--universe current900` is the survivorship-biased last resort.
 - **Useful flags:**
   - `--freq M` runs monthly, which is faster.
   - `--no-scanner` skips the current-scanner replay, the slowest variant.

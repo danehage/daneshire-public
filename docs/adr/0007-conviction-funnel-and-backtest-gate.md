@@ -30,10 +30,11 @@ Data-plumbing corrections, made before anyone had seen a result. No threshold or
 
 - **Dollar thresholds use the as-traded tape.** The price floor, the 20-day dollar volume and market cap (funnel gate and the scanner replay's Stage 1) now read unadjusted close/volume and FMP's historical market cap (`/stable/historical-market-capitalization`). Before this they read split- and dividend-adjusted bars, so a name that later split heavily (NVDA's 2016 close is ~$1 after its splits) failed the $10 / $20 floors and the $2B cap, using knowledge of its future splits. Returns still use dividend-adjusted bars. Where FMP has no unadjusted series or market cap for a symbol, the harness falls back to adjusted prices / adjusted price x diluted shares and the report counts those symbols.
 - The backtest runs on Windows (spawn workers; UTF-8 output). No effect on results.
+- **Membership source.** Our FMP plan returns HTTP 402 for the S&P 500 constituent endpoints, so point-in-time membership comes from the public daily file at github.com/fja05680/sp500 (MIT), pinned to commit `a2430f2` (last updated 2026-08-18; later dates reuse that snapshot). `--universe pit500public` is the default; FMP's `pit500` remains for plans that serve it. Prices and fundamentals still come from FMP.
 
 ## Known limits
 
-- Removed S&P 500 members whose tickers FMP no longer serves are missing (residual survivorship bias; the report counts them).
+- Removed S&P 500 members whose tickers FMP no longer serves are missing (residual survivorship bias; the report counts them). The public file lists renamed companies under their old tickers (e.g. FB before META); if FMP only serves the new ticker, those dates are missing too. A reused ticker could pull in another company's prices.
 - Sector is today's profile sector for every date.
 - The earnings blackout uses actual report dates (usually confirmed 2–4 weeks ahead).
 - FMP statements are most likely restated figures, not as first filed. Filing dates gate *when* a quarter is known, but its values may include later restatements (mild look-ahead in the quality gate).

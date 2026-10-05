@@ -261,12 +261,54 @@ def check_plan(fetcher: FMPFetcher) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# Daily S&P 500 membership from github.com/fja05680/sp500 (MIT), pinned to one
+# commit so the backtest universe can't drift between runs. Used when the FMP
+# plan doesn't serve /stable/historical-sp500-constituent (ours: HTTP 402).
+PUBLIC_MEMBERSHIP_URL = (
+    "https://raw.githubusercontent.com/fja05680/sp500/a2430f2af0c79ddf0748e91de11bdeb1616ab5a7/"
+    "S%26P%20500%20Historical%20Components%20%26%20Changes%20(Updated).csv"
+)
+
+
+def parse_public_membership(text: str, start: date) -> list[tuple[date, frozenset]]:
+    """``date,tickers`` rows (members on and after each date) -> ascending
+    ``(effective_date, members)`` from the last row on or before ``start``.
+    Share-class dots become FMP's dashes (BRK.B -> BRK-B)."""
+    rows = []
+    for line in text.splitlines()[1:]:
+        d, _, tickers = line.partition(",")
+        day = _d(d)
+        if day:
+            syms = frozenset(t.strip().replace(".", "-") for t in tickers.strip().strip('"').split(",") if t.strip())
+            rows.append((day, syms))
+    rows.sort(key=lambda r: r[0])
+    first = max((i for i, (day, _) in enumerate(rows) if day <= start), default=0)
+    out = rows[first:]
+    if out:
+        out[0] = (date.min, out[0][1])
+    return out
+
+
+def public_membership(cache_dir: Path, start: date) -> list[tuple[date, frozenset]]:
+    path = Path(cache_dir) / "sp500_membership_public.csv"
+    if not path.exists():
+        r = httpx.get(PUBLIC_MEMBERSHIP_URL, timeout=60.0, follow_redirects=True)
+        r.raise_for_status()
+        if not r.text.startswith("date,tickers"):
+            raise RuntimeError("unexpected public membership file format")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(r.text, encoding="utf-8")
+    return parse_public_membership(path.read_text(encoding="utf-8"), start)
+
+
 def universe_symbols(fetcher: FMPFetcher, mode: str, start: date) -> tuple[list[tuple[date, frozenset]], bool]:
+    if mode == "pit500public":
+        return public_membership(fetcher.cache_dir, start), False
     if mode == "pit500":
         current = [r["symbol"] for r in _rows(fetcher.get("/stable/sp500-constituent")) if r.get("symbol")]
         events = _rows(fetcher.get("/stable/historical-sp500-constituent"))
         if not current or not events:
-            raise RuntimeError("Point-in-time S&P 500 unavailable on this FMP plan; use --universe current900 (survivorship-biased)")
+            raise RuntimeError("Point-in-time S&P 500 unavailable on this FMP plan; use --universe pit500public")
         return build_membership(current, events, start), False
     if mode == "current900":
         from app.services.universes import get_combined_universe
@@ -364,7 +406,7 @@ def load_dataset(fetcher: FMPFetcher, mode: str, start: date, end: date) -> Data
         tickers=tickers,
         spy=spy,
         membership=membership,
-        universe_label="S&P 500, point-in-time" if mode == "pit500" else "current S&P 500+400 (SURVIVORSHIP-BIASED)",
+        universe_label={"pit500": "S&P 500, point-in-time (FMP)", "pit500public": "S&P 500, point-in-time (fja05680/sp500 @ a2430f2)"}.get(mode, "current S&P 500+400 (SURVIVORSHIP-BIASED)"),
         survivorship_biased=biased,
         coverage={
             "symbols_ever_member": len(syms),

@@ -215,3 +215,12 @@ def test_parallel_workers_match_serial(small_run):
     ser = rows[rows["date"].isin(some)]
     key = lambda df: sorted(zip(df["variant"], df["date"], df["ticker"], df["ret"].round(12)))  # noqa: E731
     assert key(par) == key(ser)
+
+
+def test_public_membership_starts_at_last_snapshot_before_start():
+    csv = 'date,tickers\n2015-12-01,"AAA,BRK.B"\n2016-01-04,"AAA,BRK.B,CCC"\n2017-03-01,"BRK.B,CCC"\n'
+    m = D.parse_public_membership(csv, date(2016, 1, 1))
+    ds = D.Dataset({}, None, m, "t", False)
+    assert ds.members_at(date(2016, 1, 1)) == {"AAA", "BRK-B"}
+    assert ds.members_at(date(2016, 6, 1)) == {"AAA", "BRK-B", "CCC"}
+    assert ds.members_at(date(2018, 1, 1)) == {"BRK-B", "CCC"}
