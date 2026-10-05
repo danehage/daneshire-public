@@ -200,17 +200,29 @@ class TechnicalIndicators:
         days_since_low = len(lows) - 1 - min_idx
         pct_above_low = (current_price - low_252) / low_252 * 100 if low_252 > 0 else 0.0
 
-        # Retests: post-low episodes where price came within 3% of the low and
-        # (by definition of the period min) held it.
+        # Retests: post-low episodes where price came back within 3% of the low
+        # and (by definition of the period min) held it. Only counted after
+        # price first got clear of the 3% band — the bars right after a bottom
+        # sit inside it trivially, and counting them made "Held 1 retest" a
+        # near-free +10 for any fresh low.
         post = lows.iloc[min_idx + 1 :]
-        near = post <= low_252 * 1.03
-        retests_held = int((near & ~near.shift(fill_value=False)).sum())
+        band = low_252 * 1.03
+        away = (post > band).to_numpy()
+        retests_held = 0
+        if away.any():
+            after_away = post.iloc[int(away.argmax()) :]
+            near = after_away <= band
+            retests_held = int((near & ~near.shift(fill_value=False)).sum())
 
         # Post-low trajectory: minima of successive 10-bar blocks since the low.
         # Last block above the previous = bounce holding; below = bounce fading
-        # back toward the low (the ADBE/value-trap signature).
+        # back toward the low (the ADBE/value-trap signature). A trailing block
+        # under 5 bars is dropped (as in calculate_plateau_metrics) — a 1-bar
+        # "block" compared against a 10-bar minimum is noise.
         blocks = [
-            float(post.iloc[i : i + 10].min()) for i in range(0, len(post), 10)
+            float(post.iloc[i : i + 10].min())
+            for i in range(0, len(post), 10)
+            if len(post.iloc[i : i + 10]) >= 5
         ]
         post_low_trend = None
         if len(blocks) >= 2:

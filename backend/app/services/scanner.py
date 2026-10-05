@@ -183,7 +183,8 @@ class StockScanner:
 
         return result
 
-    def _score_opportunity(self, result: dict) -> tuple[int, list[str], Optional[str]]:
+    @staticmethod
+    def _score_opportunity(result: dict) -> tuple[int, list[str], Optional[str]]:
         """
         Score a stock opportunity. Two tracks (issue #49):
 

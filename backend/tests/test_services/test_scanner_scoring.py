@@ -74,9 +74,13 @@ def scored(tmp_path_factory):
 
 
 def test_winners_score_high(scored):
+    # Was >= 40 until the retest fix: ESTC's 45 included a "Held 1 retest"
+    # that was the bar right after its low, not a retest (35 without it).
+    # Ordering is the acceptance criterion (see module docstring), so the
+    # bar here is "clearly positive", not a calibrated point value.
     for ticker, _, _ in WINNERS:
-        assert scored[ticker]["score"] >= 40, (
-            f"{ticker} scored {scored[ticker]['score']}, expected >= 40"
+        assert scored[ticker]["score"] >= 30, (
+            f"{ticker} scored {scored[ticker]['score']}, expected >= 30"
         )
 
 
@@ -160,3 +164,41 @@ def test_recovery_metrics_require_60_bars():
         }
     )
     assert TechnicalIndicators.calculate_recovery_metrics(100.0, df) is None
+
+
+def _frame_from_lows(lows: list[float]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "close": [lo + 1.0 for lo in lows],
+            "low": lows,
+            "high": [lo + 2.0 for lo in lows],
+            "volume": [1000] * len(lows),
+        }
+    )
+
+
+def test_bars_hugging_a_fresh_low_are_not_a_retest():
+    # Decline into a low, then 3 bars still inside the 3% band. Price never
+    # got clear of the low, so nothing has been retested yet.
+    lows = [200.0 - i for i in range(80)] + [100.0, 101.0, 102.0]
+    lows[79] = 99.0  # the period low, then the three hugging bars
+    m = TechnicalIndicators.calculate_recovery_metrics(103.0, _frame_from_lows(lows))
+    assert m["retests_held"] == 0
+
+
+def test_return_to_the_low_after_clearing_the_band_is_a_retest():
+    lows = [200.0 - i for i in range(80)]
+    lows[79] = 99.0
+    lows += [101.0, 108.0, 110.0, 101.5, 106.0, 112.0]  # away, back near, away
+    m = TechnicalIndicators.calculate_recovery_metrics(113.0, _frame_from_lows(lows))
+    assert m["retests_held"] == 1
+
+
+def test_short_trailing_block_does_not_decide_post_low_trend():
+    # 20 bars after the low: two full rising blocks, then a 2-bar dip. The
+    # 2-bar tail is too short to read as a fade.
+    lows = [200.0 - i for i in range(80)]
+    lows[79] = 99.0
+    lows += [105.0 + i * 0.5 for i in range(20)] + [104.0, 104.0]
+    m = TechnicalIndicators.calculate_recovery_metrics(120.0, _frame_from_lows(lows))
+    assert m["post_low_trend"] == "rising"

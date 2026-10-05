@@ -6,6 +6,8 @@ from app.models.alert import Alert, AlertHistory
 from app.models.earnings import EarningsEvent
 from app.models.earnings_trades import EarningsTrade
 from app.models.iv_snapshots import IVSnapshot
+from app.models.scan_history import ScanPick
+from app.models.fundamentals import FundamentalsSnapshot
 
 __all__ = [
     "Base",
@@ -17,4 +19,6 @@ __all__ = [
     "EarningsEvent",
     "EarningsTrade",
     "IVSnapshot",
+    "ScanPick",
+    "FundamentalsSnapshot",
 ]

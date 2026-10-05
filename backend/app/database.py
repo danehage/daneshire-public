@@ -68,3 +68,9 @@ async_session_factory = async_sessionmaker(
 async def get_db() -> AsyncSession:
     async with async_session_factory() as session:
         yield session
+
+
+def get_session_factory() -> async_sessionmaker:
+    """Session factory for work that outlives the request (background
+    tasks). A dependency so tests can swap in their own engine."""
+    return async_session_factory

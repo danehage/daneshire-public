@@ -18,9 +18,11 @@ from app.schemas.scan import (
     ScanResultsResponse,
     UniverseInfo,
 )
+from app.database import get_session_factory
 from app.schemas.tickers import normalize_ticker
 from app.services import UNIVERSES, get_universe
 from app.services.market import MarketData, TickerNotFound, get_market
+from app.services.scan_history import record_scan_picks
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,7 @@ async def list_universes():
 async def execute_scan(
     request: ScanRequest,
     market: MarketData = Depends(get_market),
+    session_factory=Depends(get_session_factory),
 ):
     """
     Start a new scan and return its scan_id immediately.
@@ -190,6 +193,15 @@ async def execute_scan(
             logger.error(f"Scan {temp_scan_id} failed: {e}", exc_info=True)
             scan_state["status"] = "error"
             scan_state["error"] = str(e)
+            return
+
+        # Forward record (ADR-0007). Best effort: a DB hiccup must not turn
+        # a finished scan into an error.
+        try:
+            async with session_factory() as session:
+                await record_scan_picks(session, temp_scan_id, request.universe, results)
+        except Exception as e:
+            logger.warning(f"Scan {temp_scan_id}: could not record picks: {e}")
 
     # Kick off the scan in the background and return immediately. ``market`` is
     # an app-state singleton, so ``scanner`` stays valid after this request ends.

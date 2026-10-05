@@ -18,6 +18,8 @@ htmlcov
 **/.venv
 **/venv
 **/scanner_cache
+backend/scripts/backtest/cache
+backend/scripts/backtest/output
 
 # Node
 **/node_modules

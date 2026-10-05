@@ -541,13 +541,20 @@ class FMPClient:
             logger.debug(f"Error fetching TTM ratios for {ticker}: {e}")
             return None
 
-    async def get_income_statements(
-        self, ticker: str, limit: int = 4
+    STATEMENT_KINDS = ("income-statement", "balance-sheet-statement", "cash-flow-statement")
+
+    async def get_quarterly_statements(
+        self, kind: str, ticker: str, limit: int = 4
     ) -> Optional[list[dict]]:
-        """Fetch quarterly income statements (most recent first)."""
+        """Fetch quarterly statements of one ``kind`` (most recent first).
+
+        ``kind`` is one of ``STATEMENT_KINDS`` — the /stable/ path segment.
+        """
+        if kind not in self.STATEMENT_KINDS:
+            raise ValueError(f"unknown statement kind: {kind}")
         try:
             url = (
-                f"{self.BASE_URL}/stable/income-statement"
+                f"{self.BASE_URL}/stable/{kind}"
                 f"?symbol={urlquote(ticker, safe='')}&period=quarter&limit={limit}&apikey={self.api_key}"
             )
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -558,8 +565,14 @@ class FMPClient:
                         return data[:limit]
             return None
         except httpx.RequestError as e:
-            logger.debug(f"Error fetching income statements for {ticker}: {e}")
+            logger.debug(f"Error fetching {kind} for {ticker}: {e}")
             return None
+
+    async def get_income_statements(
+        self, ticker: str, limit: int = 4
+    ) -> Optional[list[dict]]:
+        """Fetch quarterly income statements (most recent first)."""
+        return await self.get_quarterly_statements("income-statement", ticker, limit)
 
     async def get_stock_news(
         self, ticker: str, limit: int = 5
