@@ -317,11 +317,36 @@ def universe_symbols(fetcher: FMPFetcher, mode: str, start: date) -> tuple[list[
     raise ValueError(mode)
 
 
+# Same company, new ticker. The public membership file keeps the old symbol
+# for dates before the rename, and FMP files some or all of that history
+# under the new one (FB's statements live under META). Used only to fill
+# pieces FMP returns empty for the old symbol. Fixed 2026-10-05 from the
+# fetch's coverage gaps, before any backtest result existed.
+RENAMES = {
+    "FB": "META",     # Facebook -> Meta Platforms (2022)
+    "TMK": "GL",      # Torchmark -> Globe Life (2019)
+    "HRS": "LHX",     # Harris -> L3Harris (2019; Harris was the acquirer)
+    "KORS": "CPRI",   # Michael Kors -> Capri Holdings (2018)
+    "DWDP": "DD",     # DowDuPont -> DuPont de Nemours (2019)
+    "CTL": "LUMN",    # CenturyLink -> Lumen (2020)
+    "JEC": "J",       # Jacobs Engineering ticker change (2019)
+}
+
+
+def _with_alias(fn, sym: str, *args):
+    """``fn(sym, ...)``, or the renamed symbol's data if that comes back empty."""
+    got = fn(sym, *args)
+    if not got and sym in RENAMES:
+        got = fn(RENAMES[sym], *args)
+    return got
+
+
 def fetch_all(fetcher: FMPFetcher, mode: str, start: date, end: date) -> None:
     """Fill the cache for every symbol that was ever a member in [start, end]."""
     history_start = date(start.year - 2, 1, 1)  # 200-DMA + 8 quarters of runway
     membership, _ = universe_symbols(fetcher, mode, start)
     syms = sorted(set().union(*(m for _, m in membership)) | {"SPY"})
+    syms += sorted({RENAMES[s] for s in syms if s in RENAMES} - set(syms))
     logger.info("fetching %d symbols", len(syms))
     for i, sym in enumerate(syms):
         fetcher.bars(sym, history_start, end)
@@ -379,25 +404,30 @@ def load_dataset(fetcher: FMPFetcher, mode: str, start: date, end: date) -> Data
     syms = sorted(set().union(*(m for _, m in membership)))
     tickers, missing_bars, missing_fund, missing_raw, missing_cap = {}, [], [], [], []
     for sym in syms:
-        bars = _frame(fetcher.bars(sym, history_start, end))
+        bars = _frame(_with_alias(fetcher.bars, sym, history_start, end))
         if bars is None:
             missing_bars.append(sym)
             continue
-        bars = attach_unadjusted(bars, fetcher.raw_bars(sym, history_start, end), fetcher.market_caps(sym, history_start, end))
+        bars = attach_unadjusted(
+            bars,
+            _with_alias(fetcher.raw_bars, sym, history_start, end),
+            _with_alias(fetcher.market_caps, sym, history_start, end),
+        )
         if "raw_close" not in bars.columns:
             missing_raw.append(sym)
         if "market_cap" not in bars.columns:
             missing_cap.append(sym)
-        inc = fetcher.statements("income-statement", sym)
+        statements = lambda kind: _with_alias(lambda s: fetcher.statements(kind, s), sym)  # noqa: E731
+        inc = statements("income-statement")
         if not inc:
             missing_fund.append(sym)
         tickers[sym] = {
-            "sector": fetcher.sector(sym),
+            "sector": _with_alias(fetcher.sector, sym),
             "bars": bars,
             "income": inc,
-            "balance": fetcher.statements("balance-sheet-statement", sym),
-            "cashflow": fetcher.statements("cash-flow-statement", sym),
-            "earnings": fetcher.earnings(sym),
+            "balance": statements("balance-sheet-statement"),
+            "cashflow": statements("cash-flow-statement"),
+            "earnings": _with_alias(fetcher.earnings, sym),
         }
     spy = _frame(fetcher.bars("SPY", history_start, end))
     if spy is None:

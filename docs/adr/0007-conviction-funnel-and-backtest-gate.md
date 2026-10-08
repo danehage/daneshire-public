@@ -34,7 +34,7 @@ Data-plumbing corrections, made before anyone had seen a result. No threshold or
 
 ## Known limits
 
-- Removed S&P 500 members whose tickers FMP no longer serves are missing (residual survivorship bias; the report counts them). The public file lists renamed companies under their old tickers (e.g. FB before META); if FMP only serves the new ticker, those dates are missing too. A reused ticker could pull in another company's prices.
+- Removed S&P 500 members whose tickers FMP no longer serves are missing (residual survivorship bias; the report counts them). The public file lists renamed companies under their old tickers (e.g. FB before META); `data.RENAMES` fills any piece FMP returns empty for seven known renames (FB, TMK, HRS, KORS, DWDP, CTL, JEC), fixed from the first fetch's coverage gaps before any result existed. After that, 14 of 745 symbols (0.5% of member-weeks, all acquired companies) have no prices. A reused ticker could pull in another company's prices.
 - Sector is today's profile sector for every date.
 - The earnings blackout uses actual report dates (usually confirmed 2–4 weeks ahead).
 - FMP statements are most likely restated figures, not as first filed. Filing dates gate *when* a quarter is known, but its values may include later restatements (mild look-ahead in the quality gate).

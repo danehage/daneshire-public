@@ -224,3 +224,12 @@ def test_public_membership_starts_at_last_snapshot_before_start():
     assert ds.members_at(date(2016, 1, 1)) == {"AAA", "BRK-B"}
     assert ds.members_at(date(2016, 6, 1)) == {"AAA", "BRK-B", "CCC"}
     assert ds.members_at(date(2018, 1, 1)) == {"BRK-B", "CCC"}
+
+
+def test_renamed_ticker_borrows_only_missing_pieces():
+    f = _StubFetcher({})
+    f.statements = lambda kind, s: [{"date": "2020-03-31", "who": s}] if s == "META" else []
+    f.earnings = lambda s: [{"who": s}]
+    assert D._with_alias(lambda s: f.statements("income-statement", s), "FB")[0]["who"] == "META"
+    assert D._with_alias(f.earnings, "FB")[0]["who"] == "FB"  # FB's own data wins
+    assert D._with_alias(lambda s: f.statements("income-statement", s), "XYZ") == []
