@@ -1,0 +1,23 @@
+{
+  "comparisons": {
+    "scanner_top15": {
+      "mean_diff": 0.011880843990977462,
+      "t": 1.1887085199326546,
+      "dd_ok": true,
+      "passed": false
+    },
+    "random_quality_gate": {
+      "mean_diff": -0.00385336040236213,
+      "t": -0.5304696172927118,
+      "dd_ok": false,
+      "passed": false
+    }
+  },
+  "adopt_funnel": false,
+  "recovery_lane": {
+    "mean_diff": -0.021569077812868907,
+    "t": -1.8253026792055136,
+    "picks": 680,
+    "keep": false
+  }
+}

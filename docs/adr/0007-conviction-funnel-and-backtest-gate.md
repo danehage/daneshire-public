@@ -1,6 +1,6 @@
 # Conviction funnel, gated by a pre-registered backtest
 
-> Status: accepted (2026-10-03) for building and backtesting; the funnel is NOT live. Adoption into the scanner ranking waits on the backtest verdict below.
+> Status: accepted (2026-10-03) for building and backtesting. **Adoption rejected (2026-10-08)**: the pre-registered backtest failed; see *Verdict* below. The funnel stays out of the live scanner.
 
 The scanner's ranking (`StockScanner._score_opportunity`) is a price-only mean-reversion score whose weights were tuned on five hand-picked trades with known outcomes (ESTC, EOG, APD, ADBE, AMC — `tests/test_services/test_scanner_scoring.py`). It has no fundamentals, no market-relative strength and no regime awareness, and it ranks all ~900 names instead of producing a short list. The goal is a curated 10–20 names with a 3-month horizon (+10–25%), excluding low-quality companies.
 
@@ -32,9 +32,34 @@ Data-plumbing corrections, made before anyone had seen a result. No threshold or
 - The backtest runs on Windows (spawn workers; UTF-8 output). No effect on results.
 - **Membership source.** Our FMP plan returns HTTP 402 for the S&P 500 constituent endpoints, so point-in-time membership comes from the public daily file at github.com/fja05680/sp500 (MIT), pinned to commit `a2430f2` (last updated 2026-08-18; later dates reuse that snapshot). `--universe pit500public` is the default; FMP's `pit500` remains for plans that serve it. Prices and fundamentals still come from FMP.
 
+## Verdict (2026-10-08): do not adopt; remove the recovery lane
+
+First real-data run, judged by the rule in Decision §4 as written. Nothing was tuned before or after.
+
+| Out-of-sample test (2021-01-01 on) | Mean cohort difference | Newey-West t | Drawdown no worse | Result |
+|---|---|---|---|---|
+| Funnel vs current scanner top 15 | +1.19% | 1.19 | yes (−22.0% vs −29.7%) | fail (t ≤ 2) |
+| Funnel vs random quality-gated picks | −0.39% | −0.53 | no | fail |
+| Recovery lane vs random quality-gated picks | −2.16% (680 picks) | −1.83 | – | remove the lane |
+
+- **The funnel's ranking adds nothing over the quality gate.** Random same-size picks from the gated pool did as well as the funnel (out-of-sample CAGR 9.9% vs 7.7%). Its advantage over the current scanner comes from the gate: `funnel_no_quality_gate` is the ablation that hurts most.
+- **The current scanner's top 15 trailed SPY out-of-sample** (−2.4% per 63-session cohort, t −3.13) and trailed the equal-weight universe. Every stock-picking variant trailed cap-weighted SPY, so equal weight is the fairer yardstick. This is a finding about the scanner, not about the funnel, and is tracked separately.
+- Some ablations score better than the full funnel (`funnel_without_B`, `funnel_momentum_only`). Per §2 these are **not** candidates. Acting on them would mean a new pre-registration and a fresh out-of-sample window (see *When to revisit*).
+
+**Run:**
+- Code: master `cae3205`. Membership: `fja05680/sp500@a2430f2`.
+- FMP cache fetched 2026-10-05 and run with `--end 2026-10-05 --workers 4`. Weekly signal dates run 2016-01-08 → 2026-07-07 (549 dates: 261 in-sample, 288 out-of-sample).
+- Coverage: 735 of 745 symbols have prices; the 10 missing are all acquired companies. 22 symbols used the adjusted-price × shares market-cap fallback, and 42 funnel picks had holds truncated by the end of the data.
+- Full report: [`docs/backtests/2026-10-08-funnel-report.md`](../backtests/2026-10-08-funnel-report.md). Machine-readable verdict: [`2026-10-08-funnel-decision.json`](../backtests/2026-10-08-funnel-decision.json).
+
+**What stays:**
+- `funnel.py` and the harness stay in the repo, unused by the live scanner, as the baseline for any future pre-registered variant.
+- `scan_picks` keeps recording the live scanner's forward record.
+- The `refresh_fundamentals` Scheduler job is not needed.
+
 ## Known limits
 
-- Removed S&P 500 members whose tickers FMP no longer serves are missing (residual survivorship bias; the report counts them). The public file lists renamed companies under their old tickers (e.g. FB before META); `data.RENAMES` fills any piece FMP returns empty for seven known renames (FB, TMK, HRS, KORS, DWDP, CTL, JEC), fixed from the first fetch's coverage gaps before any result existed. After that, 14 of 745 symbols (0.5% of member-weeks, all acquired companies) have no prices. A reused ticker could pull in another company's prices.
+- Removed S&P 500 members whose tickers FMP no longer serves are missing (residual survivorship bias; the report counts them). The public file lists renamed companies under their old tickers (e.g. FB before META); `data.RENAMES` fills any piece FMP returns empty for seven known renames (FB, TMK, HRS, KORS, DWDP, CTL, JEC), fixed from the first fetch's coverage gaps before any result existed. After that, 10 of 745 symbols (all acquired companies) have no prices in the 2026-10-08 run (14 before the rename fill). A reused ticker could pull in another company's prices.
 - Sector is today's profile sector for every date.
 - The earnings blackout uses actual report dates (usually confirmed 2–4 weeks ahead).
 - FMP statements are most likely restated figures, not as first filed. Filing dates gate *when* a quarter is known, but its values may include later restatements (mild look-ahead in the quality gate).
@@ -43,5 +68,5 @@ Data-plumbing corrections, made before anyone had seen a result. No threshold or
 
 ## When to revisit
 
-- After the first real backtest run: adopt, adjust (only with a new pre-registration and a fresh out-of-sample window), or abandon.
+- ~~After the first real backtest run: adopt, adjust (only with a new pre-registration and a fresh out-of-sample window), or abandon.~~ Done 2026-10-08: not adopted. A revised funnel needs a new pre-registration and an out-of-sample window starting after 2026-10-08.
 - After ~6 months of `scan_picks`: compare live picks' realized 63-session returns to the backtest's expectation.
