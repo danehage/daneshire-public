@@ -1,5 +1,7 @@
 """Backtest harness (scripts/backtest): membership, outcomes, stats, e2e."""
 
+import gzip
+import json
 from datetime import date
 
 import numpy as np
@@ -233,3 +235,31 @@ def test_renamed_ticker_borrows_only_missing_pieces():
     assert D._with_alias(lambda s: f.statements("income-statement", s), "FB")[0]["who"] == "META"
     assert D._with_alias(f.earnings, "FB")[0]["who"] == "FB"  # FB's own data wins
     assert D._with_alias(lambda s: f.statements("income-statement", s), "XYZ") == []
+
+
+def _cached_fetcher(tmp_path, cache_only, files):
+    f = D.FMPFetcher("", tmp_path, cache_only=cache_only)
+    for params, payload in files:
+        with gzip.open(f._path("/stable/historical-price-eod/full", params), "wt", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    f.client = None  # any network call fails the test
+    return f
+
+
+def test_cache_from_an_earlier_fetch_day_is_trimmed_to_the_requested_end(tmp_path):
+    rows = [{"date": "2026-10-01", "close": 1}, {"date": "2026-10-05", "close": 2}]
+    f = _cached_fetcher(tmp_path, False, [({"symbol": "SPY", "from": "2014-01-01", "to": "2026-10-05"}, rows)])
+    assert f.get("/stable/historical-price-eod/full", symbol="SPY", **{"from": "2014-01-01", "to": "2026-10-02"}) == rows[:1]
+
+
+def test_cache_only_reuses_an_older_range_and_never_hits_the_network(tmp_path):
+    rows = [{"date": "2026-10-05", "close": 2}]
+    f = _cached_fetcher(tmp_path, True, [({"symbol": "SPY", "from": "2014-01-01", "to": "2026-10-05"}, rows)])
+    assert f.get("/stable/historical-price-eod/full", symbol="SPY", **{"from": "2014-01-01", "to": "2026-10-08"}) == rows
+    assert f.get("/stable/historical-price-eod/full", symbol="SPYX", **{"from": "2014-01-01", "to": "2026-10-08"}) == {"__error__": "cache miss"}
+    assert f.misses == 1
+
+
+def test_older_range_is_refetched_when_the_network_is_allowed(tmp_path):
+    f = _cached_fetcher(tmp_path, False, [({"symbol": "SPY", "from": "2014-01-01", "to": "2026-10-05"}, [])])
+    assert f._other_range("/stable/historical-price-eod/full", {"symbol": "SPY", "from": "2014-01-01", "to": "2026-10-08"}) is None

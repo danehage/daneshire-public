@@ -5,6 +5,7 @@ Backtest CLI. Run from backend/.
     python -m scripts.backtest.run --check-plan           # which FMP endpoints our plan serves
     python -m scripts.backtest.run --fetch                # fill the FMP cache (resumable)
     python -m scripts.backtest.run                        # run on cached data, write the report
+    python -m scripts.backtest.run --cache-only           # same, never touch the network (no key needed)
 
 Outputs go to scripts/backtest/output/ (gitignored): report.md, picks.csv,
 diagnostics.csv, decision.json.
@@ -33,6 +34,8 @@ def main(argv=None) -> int:
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--check-plan", action="store_true")
     ap.add_argument("--fetch", action="store_true")
+    ap.add_argument("--cache-only", action="store_true",
+                    help="read only the cache: no FMP key, no network; misses count as no data")
     ap.add_argument("--universe", choices=["pit500public", "pit500", "current900"], default="pit500public",
                     help="pit500public: public daily membership file (default; our FMP plan 402s on pit500)")
     ap.add_argument("--start", type=date.fromisoformat, default=date(2016, 1, 1))
@@ -52,7 +55,10 @@ def main(argv=None) -> int:
         ds = D.synthetic_dataset(n_tickers=80, start=date(2013, 1, 1), end=date(2022, 12, 30))
         start, end, oos = date(2015, 1, 1), date(2022, 12, 30), date(2019, 1, 1)
     else:
-        fetcher = D.FMPFetcher(D.api_key_from_env(), args.cache_dir, args.per_minute)
+        if args.cache_only and (args.check_plan or args.fetch):
+            ap.error("--cache-only can't be combined with --check-plan or --fetch")
+        key = "" if args.cache_only else D.api_key_from_env()
+        fetcher = D.FMPFetcher(key, args.cache_dir, args.per_minute, cache_only=args.cache_only)
         if args.check_plan:
             for r in D.check_plan(fetcher):
                 print(f"{r['status']:<28} {r['endpoint']:<36} {r['info']}")

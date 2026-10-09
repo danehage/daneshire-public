@@ -3,17 +3,20 @@ Backtest dataset: FMP fetch with a resumable on-disk cache, point-in-time
 S&P 500 membership, and a loader that turns the cache into the structures
 the engine consumes.
 
-Run from backend/ (needs FMP_API_KEY):
+Run from backend/ (needs FMP_API_KEY, except with --cache-only):
     python -m scripts.backtest.run --check-plan     # which endpoints our plan serves
     python -m scripts.backtest.run --fetch          # fill the cache (resumable)
+    python -m scripts.backtest.run --cache-only     # replay the cache, no network
 """
 
 from __future__ import annotations
 
+import glob
 import gzip
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -101,10 +104,19 @@ def _d(v) -> Optional[date]:
 
 class FMPFetcher:
     """Synchronous, throttled, retrying FMP client with a gzip JSON cache.
-    Every response is cached by (endpoint, params); re-runs are free."""
+    Every response is cached by (endpoint, params); re-runs are free.
 
-    def __init__(self, api_key: str, cache_dir: Path = DEFAULT_CACHE, per_minute: int = 280):
+    Date-ranged requests also reuse a cached file whose ``to`` differs, so a
+    run on a later day still finds a cache filled earlier: a later ``to`` is
+    trimmed back to the requested one; an earlier one is used as-is (the data
+    simply ends there) only when ``cache_only``. ``cache_only`` never touches
+    the network: a miss returns an error payload and is counted."""
+
+    def __init__(self, api_key: str, cache_dir: Path = DEFAULT_CACHE, per_minute: int = 280,
+                 cache_only: bool = False):
         self.api_key = api_key
+        self.cache_only = cache_only
+        self.misses = 0
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.min_interval = 60.0 / per_minute
@@ -119,9 +131,15 @@ class FMPFetcher:
 
     def get(self, endpoint: str, refresh: bool = False, **params):
         path = self._path(endpoint, params)
-        if path.exists() and not refresh:
-            with gzip.open(path, "rt", encoding="utf-8") as f:
-                return json.load(f)
+        if not refresh:
+            if path.exists():
+                return _load(path)
+            other = self._other_range(endpoint, params)
+            if other is not None:
+                return _trim(_load(other[1]), params["to"]) if other[0] > params["to"] else _load(other[1])
+        if self.cache_only:
+            self.misses += 1
+            return {"__error__": "cache miss"}
         qs = "&".join(f"{k}={quote(str(v), safe=',')}" for k, v in params.items())
         url = f"{BASE_URL}{endpoint}?{qs}{'&' if qs else ''}apikey={self.api_key}"
         for attempt in range(5):
@@ -145,6 +163,22 @@ class FMPFetcher:
                 json.dump(data, f)
             return data
         return {"__error__": "retries exhausted"}
+
+    def _other_range(self, endpoint: str, params: dict) -> Optional[tuple[str, Path]]:
+        """A cached (to, path) for the same request with a different ``to``:
+        the nearest one at or after the requested date, else (cache-only)
+        the latest one before it."""
+        if "to" not in params:
+            return None
+        head, tail = self._path(endpoint, {**params, "to": "@TO@"}).name.split("@TO@")
+        found = sorted(
+            (p.name[len(head):-len(tail)], p) for p in self.cache_dir.glob(glob.escape(head) + "*" + glob.escape(tail))
+        )
+        found = [(to, p) for to, p in found if _ISO_DATE.fullmatch(to)]
+        later = [x for x in found if x[0] >= params["to"]]
+        if later:
+            return later[0]
+        return found[-1] if found and self.cache_only else None
 
     # -- endpoints --------------------------------------------------------
 
@@ -197,6 +231,24 @@ class FMPFetcher:
     def sector(self, sym: str) -> Optional[str]:
         rows = _rows(self.get("/stable/profile", symbol=sym))
         return rows[0].get("sector") if rows else None
+
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _load(path: Path):
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _trim(data, to: str):
+    """Drop rows dated after ``to`` from a cached date-ranged payload."""
+    keep = lambda rows: [r for r in rows if not (isinstance(r, dict) and str(r.get("date", ""))[:10] > to)]  # noqa: E731
+    if isinstance(data, list):
+        return keep(data)
+    if isinstance(data, dict) and isinstance(data.get("historical"), list):
+        return {**data, "historical": keep(data["historical"])}
+    return data
 
 
 def _rows(data) -> list[dict]:
@@ -430,8 +482,10 @@ def load_dataset(fetcher: FMPFetcher, mode: str, start: date, end: date) -> Data
             "earnings": _with_alias(fetcher.earnings, sym),
         }
     spy = _frame(fetcher.bars("SPY", history_start, end))
+    if fetcher.cache_only and fetcher.misses:
+        logger.warning("cache-only: %d requests had no cached response", fetcher.misses)
     if spy is None:
-        raise RuntimeError("no SPY bars")
+        raise RuntimeError("no SPY bars" + (" in the cache" if fetcher.cache_only else ""))
     return Dataset(
         tickers=tickers,
         spy=spy,
