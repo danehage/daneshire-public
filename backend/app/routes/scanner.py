@@ -21,6 +21,7 @@ from app.schemas.scan import (
 from app.database import get_session_factory
 from app.schemas.tickers import normalize_ticker
 from app.services import UNIVERSES, get_universe
+from app.services.fundamentals import ScanQualityGate
 from app.services.market import MarketData, TickerNotFound, get_market
 from app.services.scan_history import record_scan_picks
 
@@ -185,6 +186,7 @@ async def execute_scan(
                 use_cache=request.use_cache,
                 universe=request.universe,
                 results_out=live_results,
+                quality_gate=ScanQualityGate(session_factory, scanner.client),
             )
             scan_state["results"] = results
             scan_state["status"] = "complete"

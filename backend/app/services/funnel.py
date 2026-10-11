@@ -412,6 +412,12 @@ def _col(df: pd.DataFrame, name: str, fallback: pd.Series) -> pd.Series:
     return s.where(s > 0, fallback)
 
 
+def dollar_volume(close: pd.Series, volume: pd.Series, window: int = 20) -> float:
+    """Mean daily dollar volume over the last ``window`` bars — the gate's
+    liquidity input. One definition for the backtest and the live scan."""
+    return float((close.astype(float) * volume.astype(float)).tail(window).mean())
+
+
 def compute_technicals(df: pd.DataFrame, cfg: FunnelConfig = FunnelConfig()) -> Optional[dict]:
     """Bar-derived factor inputs from bars already truncated to as-of."""
     need = max(cfg.ma_slow + cfg.ma_slow_slope_lookback, cfg.rs_lookback + 1, cfg.hv_long + 1)
@@ -482,7 +488,7 @@ def compute_technicals(df: pd.DataFrame, cfg: FunnelConfig = FunnelConfig()) -> 
         "updown_vol": updown,
         "atr": atr,
         "atr_pct": atr / px * 100,
-        "dollar_volume": float((raw_close * raw_vol).tail(20).mean()),
+        "dollar_volume": dollar_volume(raw_close, raw_vol),
         "high_10d": float(high.tail(10).max()),
         "ema_21": float(close.ewm(span=21, adjust=False).mean().iloc[-1]),
         "swing_low": _confirmed_swing_low(low),

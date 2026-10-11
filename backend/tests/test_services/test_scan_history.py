@@ -49,7 +49,10 @@ async def test_records_top_n_in_rank_order(db_session):
 
 
 class _ResultScanner:
-    async def run_scan(self, tickers, progress_callback=None, use_cache=True, universe=None, results_out=None):
+    client = None
+
+    async def run_scan(self, tickers, progress_callback=None, use_cache=True, universe=None,
+                       results_out=None, quality_gate=None):
         return ("ignored", _results(25))
 
 

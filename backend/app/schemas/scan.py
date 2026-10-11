@@ -73,6 +73,12 @@ class ScanResultItem(BaseModel):
     retests_held: Optional[int] = None
     hv_vs_peak: Optional[float] = None
     reclaim_streak: Optional[int] = None
+    # 20-day mean of close x volume — the quality gate's liquidity input.
+    dollar_volume: Optional[float] = None
+    # ADR-0007 quality gate (#116). None = gate not run or unavailable;
+    # quality_fails names each failed rule (e.g. "free cash flow").
+    quality_pass: Optional[bool] = None
+    quality_fails: list[str] = []
     score: int
     signals: list[str]
 

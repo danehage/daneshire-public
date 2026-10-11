@@ -24,6 +24,8 @@ class _FakeScanner:
     ``/execute`` returns *before* the scan finishes.
     """
 
+    client = None  # the route hands it to ScanQualityGate
+
     def __init__(self):
         self.started = asyncio.Event()
 
@@ -34,6 +36,7 @@ class _FakeScanner:
         use_cache=True,
         universe=None,
         results_out=None,
+        quality_gate=None,
     ):
         self.started.set()
         if progress_callback:
@@ -119,6 +122,8 @@ class _PausableScanner:
     """Appends two scored rows to ``results_out``, then blocks until told to
     finish — so the test can hit /results mid-scan (issue #53)."""
 
+    client = None  # the route hands it to ScanQualityGate
+
     def __init__(self):
         self.first_batch_done = asyncio.Event()
         self.proceed = asyncio.Event()
@@ -130,6 +135,7 @@ class _PausableScanner:
         use_cache=True,
         universe=None,
         results_out=None,
+        quality_gate=None,
     ):
         results_out.append(_row("AAA", 10))
         results_out.append(_row("BBB", 70))

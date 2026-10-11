@@ -27,6 +27,7 @@ _PAYLOAD_KEYS = (
     "range_position", "high_52w", "low_52w", "market_cap",
     "rsi_floor_delta", "days_since_low", "post_low_trend",
     "earnings_date", "days_to_earnings",
+    "quality_pass", "quality_fails", "dollar_volume",
 )
 
 
@@ -49,13 +50,19 @@ async def record_scan_picks(
 ) -> int:
     """Persist the top ``top_n`` of ``results`` (already sorted best-first).
 
+    Rows the quality gate failed are hidden from the scanner by default
+    (#116), so they are not picks: ranks count gate passers (and rows the
+    gate couldn't judge) only. Rows recorded since #116 carry
+    ``quality_pass`` in their payload; older rows predate the gate.
+
     Returns the number of rows written. Rows without a positive price are
     skipped (nothing to measure a forward return from) but keep their rank
     slot, so ranks reflect the scanner's real ordering.
     """
     scanned_at = scanned_at or datetime.now(timezone.utc)
     rows = []
-    for rank, r in enumerate(results[:top_n], start=1):
+    shown = [r for r in results if r.get("quality_pass") is not False]
+    for rank, r in enumerate(shown[:top_n], start=1):
         price = r.get("price")
         if not price or price <= 0:
             continue

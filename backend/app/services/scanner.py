@@ -15,6 +15,7 @@ import pandas as pd
 import pytz
 
 from app.services.fmp_client import FMPClient, prune_dated_cache_files
+from app.services.funnel import dollar_volume
 from app.services.indicators import TechnicalIndicators
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,11 @@ class StockScanner:
             "market_cap": int(quote.get("marketCap", 0) or 0),
             "volume": int(current_volume or 0),
             "avg_volume": int(avg_volume or 0),
+            "dollar_volume": (
+                dollar_volume(df["close"], df["volume"])
+                if {"close", "volume"} <= set(df.columns)
+                else None
+            ),
             "volume_pace": volume_pace,
             "volume_pace_reliable": is_market_hours,
             "hv_rank": vol_data["rank"] if vol_data else None,
@@ -327,6 +333,7 @@ class StockScanner:
         use_cache: bool = True,
         universe: str = "custom",
         results_out: Optional[list] = None,
+        quality_gate=None,
     ) -> tuple[str, list[dict]]:
         """
         Run a full scan on the given ticker list.
@@ -346,6 +353,9 @@ class StockScanner:
             results_out: Optional caller-owned list; scored results are
                 appended as they land so the caller can serve partials
                 while the scan runs
+            quality_gate: Optional ``ScanQualityGate`` (#116). Each row
+                gets ``quality_pass`` / ``quality_fails``; without a gate
+                they stay None / []
 
         Returns:
             tuple: (scan_id, list of analyzed stocks sorted by score)
@@ -413,6 +423,9 @@ class StockScanner:
             logger.error("No stocks passed Stage 1 filters")
             return scan_id, []
 
+        if quality_gate is not None:
+            await quality_gate.preload(survivors)
+
         # Stage 2: Deep analysis (parallel with semaphore)
         # Use lower concurrency to avoid rate limits
         results = results_out if results_out is not None else []
@@ -436,6 +449,10 @@ class StockScanner:
                         result["score"] = score
                         result["signals"] = signals
                         result["setup"] = setup
+                        if quality_gate is not None:
+                            passed, fails = await quality_gate.evaluate(result)
+                            result["quality_pass"] = passed
+                            result["quality_fails"] = fails
                         results.append(result)
                     else:
                         errors += 1  # Track when we can't process a ticker
@@ -468,6 +485,13 @@ class StockScanner:
         )
 
         logger.info(f"Stage 2 complete - {len(results)} stocks analyzed, {errors} errors")
+        if quality_gate is not None:
+            passed = sum(1 for r in results if r.get("quality_pass"))
+            logger.info(
+                f"Quality gate: {passed}/{len(results)} passed; "
+                f"{quality_gate.refreshed} snapshots refreshed, "
+                f"{quality_gate.refresh_failed} refresh failures"
+            )
 
         # Warn if high error rate
         if errors > 0 and total > 0:

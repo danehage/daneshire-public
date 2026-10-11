@@ -107,15 +107,31 @@ function SetupBadge({ setup }) {
   );
 }
 
+function GateFailures({ fails }) {
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {fails.map((reason) => (
+        <span
+          key={reason}
+          className="inline-block text-xs px-1.5 py-0.5 border border-ink bg-error text-warm-white whitespace-nowrap"
+        >
+          {reason}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function ResultRow({ result, onAddToWatchlist, isAdding }) {
   const [expanded, setExpanded] = useState(false);
+  const failedGate = result.quality_pass === false;
 
   return (
     <>
       <tr
         className={`border-b-2 border-ink hover:bg-warm-white transition-colors cursor-pointer ${
           expanded ? "bg-warm-white" : ""
-        }`}
+        } ${failedGate ? "opacity-60" : ""}`}
         onClick={() => setExpanded(!expanded)}
       >
         <td className="py-3 px-4">
@@ -129,6 +145,7 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
             </span>
             <span className="font-serif text-lg text-ink">{result.ticker}</span>
           </div>
+          {failedGate && <GateFailures fails={result.quality_fails} />}
         </td>
         <td className="py-3 px-4 font-mono">${result.price.toFixed(2)}</td>
         <td className="py-3 px-4">
@@ -325,6 +342,7 @@ export default function ScannerPage() {
   const [selectedUniverse, setSelectedUniverse] = useState("combined");
   const [useCache, setUseCache] = useState(true);
   const [addingTicker, setAddingTicker] = useState(null);
+  const [showFiltered, setShowFiltered] = useState(false);
 
   const { data: universes, isLoading: universesLoading } = useUniverses();
   const {
@@ -340,6 +358,15 @@ export default function ScannerPage() {
 
   const addToWatchlist = useCreateWatchlistItem();
   const role = useRole();
+
+  // ADR-0007 quality gate (#116): rows that failed are hidden by default.
+  // null means the gate didn't run, so those rows stay visible.
+  const allRows = results?.results ?? [];
+  const filteredOut = allRows.filter((r) => r.quality_pass === false);
+  const shownRows = showFiltered
+    ? allRows
+    : allRows.filter((r) => r.quality_pass !== false);
+  const gateRan = allRows.some((r) => r.quality_pass != null);
 
   const handleStartScan = () => {
     reset();
@@ -431,7 +458,7 @@ export default function ScannerPage() {
       )}
 
       {/* Results — partial snapshots stream in while the scan runs */}
-      {results && results.results.length > 0 && (
+      {results && allRows.length > 0 && (
         <div className="space-y-4">
           {/* Warning banner if there were errors */}
           {results.warning && (
@@ -442,7 +469,7 @@ export default function ScannerPage() {
 
           <div className="flex items-center justify-between">
             <h2 className="font-serif text-2xl text-ink">
-              Results ({results.results.length} opportunities)
+              Results ({allRows.length - filteredOut.length} passed quality gate)
               {results.partial && (
                 <span className="ml-3 align-middle inline-block px-2 py-1 text-xs font-medium uppercase tracking-wide bg-warning text-warm-white border-2 border-ink animate-pulse">
                   partial — scan running, order may shift
@@ -460,8 +487,27 @@ export default function ScannerPage() {
               )}
             </span>
           </div>
+          <div className="flex items-center justify-between text-sm">
+            {gateRan ? (
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showFiltered}
+                  onChange={(e) => setShowFiltered(e.target.checked)}
+                  className="w-4 h-4 border-2 border-ink"
+                />
+                <span className="text-ink">
+                  Show filtered out ({filteredOut.length})
+                </span>
+              </label>
+            ) : (
+              <span className="text-warning">
+                Quality gate unavailable for this scan; results are unfiltered.
+              </span>
+            )}
+          </div>
           <ResultsTable
-            results={results.results}
+            results={shownRows}
             onAddToWatchlist={role === "owner" ? handleAddToWatchlist : null}
             addingTicker={addingTicker}
           />
