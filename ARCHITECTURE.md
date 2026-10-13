@@ -370,7 +370,7 @@ Secure these with a shared secret header (`X-Scheduler-Secret`) so they can't be
 
 ### Scanner
 - Universe selector, filters, execute button
-- Results table with "Add to watchlist" button per row
+- Results table with "Add to watchlist" button per row. Sortable fact columns (#117): % off 52w high, earnings reaction vs SPY, last EPS beat/miss, trend vs 50/200-day MA, HV Rank, days to next report, sector, market cap, plus the legacy score until ~2027-01-10. Quality-gate failures hidden by default (#116)
 - Historical scans dropdown
 
 ### Ticker Detail (click any ticker anywhere)

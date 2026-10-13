@@ -103,6 +103,15 @@ class FMPRequestError(Exception):
         super().__init__(f"FMP {where}{failure.describe()}")
 
 
+def _num(v) -> Optional[float]:
+    """Float or None; FMP sends numbers, nulls and the odd string."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
 def _describe_request(url: str) -> str:
     """Path + symbol(s) of an FMP URL, never the query string.
 
@@ -599,6 +608,22 @@ class FMPClient:
         Fetch upcoming earnings date for a ticker.
         Returns dict with 'date' and 'days_until' or None if not found.
         """
+        info = await self.get_earnings_info(ticker)
+        if not info or info.get("next_date") is None:
+            return None
+        return {"date": info["next_date"], "days_until": info["days_until"]}
+
+    async def get_earnings_info(self, ticker: str) -> Optional[dict]:
+        """
+        Next and last earnings report from one ``/stable/earnings`` call.
+
+        Returns ``{"next_date", "days_until", "last_date", "last_eps_actual",
+        "last_eps_estimate"}`` (any value may be None), or None when the
+        request fails or FMP has no entries. "Last" is the newest entry on
+        or before today that carries an actual EPS, i.e. a report that has
+        happened. The same call the scanner always made for the next date,
+        so the last-report facts (#117) cost no extra request.
+        """
         try:
             # /stable/earnings replaces the legacy-gated /api/v3/earning_calendar
             # (dead on this plan since the 2025-08-31 cutoff — every call
@@ -607,36 +632,46 @@ class FMPClient:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(url)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list) and len(data) > 0:
-                        today = date.today()
-                        # Entries come date-descending (farthest future first),
-                        # so collect all upcoming dates and take the nearest.
-                        upcoming: list[date] = []
-                        for entry in data:
-                            earnings_date_str = entry.get("date")
-                            if not earnings_date_str:
-                                continue
-                            try:
-                                earnings_date = datetime.strptime(
-                                    earnings_date_str, "%Y-%m-%d"
-                                ).date()
-                            except ValueError:
-                                continue
-                            if (earnings_date - today).days >= 0:
-                                upcoming.append(earnings_date)
-                        if upcoming:
-                            nearest = min(upcoming)
-                            return {
-                                "date": nearest.isoformat(),
-                                "days_until": (nearest - today).days,
-                            }
-
-                elif response.status_code == 429:
+                if response.status_code == 429:
                     logger.warning(f"Rate limited on earnings for {ticker}")
+                    return None
+                if response.status_code != 200:
+                    return None
+                data = response.json()
+                if not isinstance(data, list) or not data:
+                    return None
 
-                return None
+                today = date.today()
+                # Entries come date-descending (farthest future first), so
+                # collect upcoming dates and take the nearest explicitly.
+                upcoming: list[date] = []
+                last: Optional[tuple[date, dict]] = None
+                for entry in data:
+                    if not isinstance(entry, dict):
+                        continue
+                    earnings_date_str = entry.get("date")
+                    if not earnings_date_str:
+                        continue
+                    try:
+                        earnings_date = datetime.strptime(
+                            earnings_date_str, "%Y-%m-%d"
+                        ).date()
+                    except ValueError:
+                        continue
+                    if (earnings_date - today).days >= 0:
+                        upcoming.append(earnings_date)
+                    if earnings_date <= today and entry.get("epsActual") is not None:
+                        if last is None or earnings_date > last[0]:
+                            last = (earnings_date, entry)
+
+                nearest = min(upcoming) if upcoming else None
+                return {
+                    "next_date": nearest.isoformat() if nearest else None,
+                    "days_until": (nearest - today).days if nearest else None,
+                    "last_date": last[0].isoformat() if last else None,
+                    "last_eps_actual": _num(last[1].get("epsActual")) if last else None,
+                    "last_eps_estimate": _num(last[1].get("epsEstimated")) if last else None,
+                }
 
         except httpx.RequestError as e:
             logger.debug(f"Error fetching earnings for {ticker}: {e}")

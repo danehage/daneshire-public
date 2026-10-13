@@ -1,8 +1,14 @@
 """
 Forward record of scan picks (ADR-0007).
 
-Every completed scan writes its top-N ranked rows to ``scan_picks`` so the
-scanner's real-time picks can be scored against what happened next. The
+Every completed scan writes its quality-gated rows to ``scan_picks`` so the
+scanner's real-time list can be scored against what happened next.
+
+Since #117 the scanner is a sortable shortlist, not a ranker, so the record
+holds the FULL gated list (decided 2026-10-13). ``rank`` is still the
+legacy-score order, and ``payload.legacy_top20`` marks the rows the old
+top-20 record would have kept, so the forward record stays comparable with
+pre-#117 scans: filter on that flag to get the old record back. The
 in-memory scan store in ``routes/scanner.py`` ages out within the hour;
 this is what survives.
 """
@@ -28,6 +34,10 @@ _PAYLOAD_KEYS = (
     "rsi_floor_delta", "days_since_low", "post_low_trend",
     "earnings_date", "days_to_earnings",
     "quality_pass", "quality_fails", "dollar_volume",
+    # #117 fact columns
+    "pct_off_high", "sector", "last_earnings_date", "last_eps_actual",
+    "last_eps_estimate", "eps_surprise_pct", "earnings_reaction_pct",
+    "earnings_reaction_vs_spy",
 )
 
 
@@ -48,12 +58,16 @@ async def record_scan_picks(
     top_n: int = TOP_N,
     scanned_at: Optional[datetime] = None,
 ) -> int:
-    """Persist the top ``top_n`` of ``results`` (already sorted best-first).
+    """Persist every shown row of ``results`` (sorted by legacy score).
 
     Rows the quality gate failed are hidden from the scanner by default
-    (#116), so they are not picks: ranks count gate passers (and rows the
-    gate couldn't judge) only. Rows recorded since #116 carry
+    (#116), so they are not recorded: ranks count gate passers (and rows
+    the gate couldn't judge) only. Rows recorded since #116 carry
     ``quality_pass`` in their payload; older rows predate the gate.
+
+    Every recorded row's payload has ``legacy_top20`` (#117): true for the
+    first ``top_n`` ranks. Rows from before #117 have no such key; they
+    are all top-20 picks.
 
     Returns the number of rows written. Rows without a positive price are
     skipped (nothing to measure a forward return from) but keep their rank
@@ -62,7 +76,7 @@ async def record_scan_picks(
     scanned_at = scanned_at or datetime.now(timezone.utc)
     rows = []
     shown = [r for r in results if r.get("quality_pass") is not False]
-    for rank, r in enumerate(shown[:top_n], start=1):
+    for rank, r in enumerate(shown, start=1):
         price = r.get("price")
         if not price or price <= 0:
             continue
@@ -77,7 +91,10 @@ async def record_scan_picks(
                 setup=r.get("setup"),
                 tier=r.get("tier"),
                 price=price,
-                payload={k: _jsonable(r.get(k)) for k in _PAYLOAD_KEYS if r.get(k) is not None},
+                payload={
+                    **{k: _jsonable(r.get(k)) for k in _PAYLOAD_KEYS if r.get(k) is not None},
+                    "legacy_top20": rank <= top_n,
+                },
                 scanned_at=scanned_at,
             )
         )

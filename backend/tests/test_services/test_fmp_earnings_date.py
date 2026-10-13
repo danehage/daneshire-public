@@ -76,3 +76,49 @@ async def test_returns_none_on_error_payload(tmp_path, monkeypatch):
     _patch_response(monkeypatch, {"Error Message": "Legacy Endpoint ..."})
 
     assert await make_client(tmp_path).get_earnings_date("AAPL") is None
+
+
+async def test_earnings_info_carries_last_report_from_same_call(tmp_path, monkeypatch):
+    # #117: the last report's EPS comes from the response the scanner
+    # already fetches for the next date -- no extra request.
+    today = date.today()
+    near = today + timedelta(days=20)
+    last = today - timedelta(days=70)
+    older = today - timedelta(days=160)
+    _patch_response(
+        monkeypatch,
+        [
+            {"symbol": "AAPL", "date": near.isoformat(), "epsActual": None, "epsEstimated": 1.5},
+            {"symbol": "AAPL", "date": last.isoformat(), "epsActual": 2.1, "epsEstimated": 2.0},
+            {"symbol": "AAPL", "date": older.isoformat(), "epsActual": 1.0, "epsEstimated": 1.2},
+        ],
+    )
+
+    info = await make_client(tmp_path).get_earnings_info("AAPL")
+
+    assert info == {
+        "next_date": near.isoformat(),
+        "days_until": 20,
+        "last_date": last.isoformat(),
+        "last_eps_actual": 2.1,
+        "last_eps_estimate": 2.0,
+    }
+
+
+async def test_earnings_info_skips_past_rows_without_actuals(tmp_path, monkeypatch):
+    today = date.today()
+    _patch_response(
+        monkeypatch,
+        [
+            {"symbol": "AAPL", "date": (today - timedelta(days=5)).isoformat(), "epsActual": None},
+            {"symbol": "AAPL", "date": (today - timedelta(days=95)).isoformat(),
+             "epsActual": "0.9", "epsEstimated": None},
+        ],
+    )
+
+    info = await make_client(tmp_path).get_earnings_info("AAPL")
+
+    assert info["next_date"] is None and info["days_until"] is None
+    assert info["last_date"] == (today - timedelta(days=95)).isoformat()
+    assert info["last_eps_actual"] == 0.9
+    assert info["last_eps_estimate"] is None

@@ -233,6 +233,9 @@ async def test_scan_rows_carry_the_verdict(tmp_path, factory):
         "ZQG2": (False, ["leverage"]),
         "ZQG3": (False, ["no fundamentals"]),
     }
+    # #117: the sector column comes from the same snapshot, no extra call.
+    sectors = {r["ticker"]: r["sector"] for r in results}
+    assert sectors == {"ZQG1": "Industrials", "ZQG2": "Industrials", "ZQG3": None}
 
 
 async def test_forward_record_skips_gate_failures(db_session):

@@ -54,7 +54,7 @@ First real-data run, judged by the rule in Decision §4 as written. Nothing was 
 
 **What stays:**
 - `funnel.py` and the harness stay in the repo, unused by the live scanner, as the baseline for any future pre-registered variant.
-- `scan_picks` keeps recording the live scanner's forward record.
+- `scan_picks` keeps recording the live scanner's forward record. Since #117 (2026-10-13) it records the full quality-gated list of each scan, not the top 20. `rank` is still the legacy-score order and `payload.legacy_top20` marks the old top 20, so filtering on that flag reproduces the pre-#117 record.
 - The `refresh_fundamentals` Scheduler job is not needed.
 
 ## Known limits

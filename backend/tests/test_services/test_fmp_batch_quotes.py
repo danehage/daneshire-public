@@ -137,7 +137,7 @@ class FakeFMPForScanner:
     async def get_historical_data(self, ticker, days=252, use_cache=True):
         return None
 
-    async def get_earnings_date(self, ticker):
+    async def get_earnings_info(self, ticker):
         return None
 
 

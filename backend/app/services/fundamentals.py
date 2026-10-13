@@ -222,6 +222,11 @@ class ScanQualityGate:
         self._fresh.add(ticker)
         self.refreshed += 1
 
+    def sector(self, ticker: str) -> Optional[str]:
+        """Sector from the ticker's snapshot (FMP profile), for the scanner's
+        sector column (#117). Call after ``evaluate``; None if unknown."""
+        return self._metrics.get(ticker, (None, None))[1]
+
     async def evaluate(self, result: dict) -> tuple[Optional[bool], list[str]]:
         """(passed, failure reasons) for one scored scan row. ``passed`` is
         None when the gate is unavailable."""

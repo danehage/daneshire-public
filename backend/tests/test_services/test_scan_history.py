@@ -29,13 +29,16 @@ def _results(n):
     ]
 
 
-async def test_records_top_n_in_rank_order(db_session):
+async def test_records_full_list_flagging_legacy_top_n(db_session):
+    # #117: the whole shown list is recorded; the legacy top 20 is a flag.
     scan_id = str(uuid.uuid4())
     results = _results(30)
     results[3]["price"] = None  # unmeasurable: skipped but keeps its slot
+    results[0]["sector"] = "Industrials"
+    results[0]["eps_surprise_pct"] = 4.2
     try:
         n = await record_scan_picks(db_session, scan_id, "combined", results, top_n=20)
-        assert n == 19
+        assert n == 29
         rows = (await db_session.execute(
             select(ScanPick).where(ScanPick.scan_id == uuid.UUID(scan_id)).order_by(ScanPick.rank)
         )).scalars().all()
@@ -43,6 +46,11 @@ async def test_records_top_n_in_rank_order(db_session):
         assert rows[0].ticker == "T00" and rows[0].ranker == "scanner"
         assert rows[0].payload["signals"] == ["x"]
         assert rows[0].payload.get("rsi") is None  # NaN not written as JSON
+        assert rows[0].payload["sector"] == "Industrials"
+        assert rows[0].payload["eps_surprise_pct"] == 4.2
+        flagged = [r.rank for r in rows if r.payload["legacy_top20"]]
+        assert flagged == [1, 2, 3] + list(range(5, 21))
+        assert all(r.payload["legacy_top20"] is False for r in rows if r.rank > 20)
     finally:
         await db_session.execute(delete(ScanPick).where(ScanPick.scan_id == uuid.UUID(scan_id)))
         await db_session.commit()
@@ -77,8 +85,9 @@ async def test_completed_scan_writes_its_picks(client, db_session):
             rows = (await s.execute(
                 select(ScanPick).where(ScanPick.scan_id == uuid.UUID(scan_id))
             )).scalars().all()
-        assert len(rows) == 20
+        assert len(rows) == 25
         assert {r.universe for r in rows} == {"sp500_sample"}
+        assert sum(r.payload["legacy_top20"] for r in rows) == 20
     finally:
         async with factory() as s:
             await s.execute(delete(ScanPick).where(ScanPick.scan_id == uuid.UUID(scan_id)))

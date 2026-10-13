@@ -26,6 +26,61 @@ logger = logging.getLogger(__name__)
 _ET = pytz.timezone("America/New_York")
 
 
+# Benchmark for "last earnings reaction vs SPY" (#117). One cached
+# historical fetch per day, shared by every row.
+BENCHMARK = "SPY"
+
+
+def _closes_by_date(bars) -> dict[str, float]:
+    """``{"YYYY-MM-DD": close}`` from FMP bars; unparseable bars dropped."""
+    out: dict[str, float] = {}
+    for bar in bars or []:
+        try:
+            out[str(bar["date"])[:10]] = float(bar["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def earnings_reaction(
+    closes: dict[str, float],
+    benchmark: dict[str, float],
+    report_date: Optional[str],
+) -> tuple[Optional[float], Optional[float]]:
+    """Signed % move around a report, raw and minus SPY's move (#117).
+
+    Window: last close strictly before the report date -> close of the
+    first session strictly after it. FMP's earnings feed carries no
+    before-open / after-close flag, so one window covers both: exact for
+    after-close reporters, one extra session of drift for before-open
+    ones. None until that next session has closed. The SPY move uses the
+    same two dates; if SPY lacks either, only the raw move is returned.
+    """
+    if not report_date or not closes:
+        return None, None
+    dates = sorted(closes)
+    before = [d for d in dates if d < report_date]
+    after = [d for d in dates if d > report_date]
+    if not before or not after:
+        return None, None
+    d0, d1 = before[-1], after[0]
+    if closes[d0] <= 0:
+        return None, None
+    move = (closes[d1] / closes[d0] - 1) * 100
+    b0, b1 = benchmark.get(d0), benchmark.get(d1)
+    if not b0 or not b1 or b0 <= 0:
+        return round(move, 2), None
+    return round(move, 2), round(move - (b1 / b0 - 1) * 100, 2)
+
+
+def eps_surprise_pct(actual: Optional[float], estimate: Optional[float]) -> Optional[float]:
+    """(actual - estimate) / |estimate| in %. None without both, or when the
+    estimate is zero (no meaningful percentage)."""
+    if actual is None or estimate is None or estimate == 0:
+        return None
+    return round((actual - estimate) / abs(estimate) * 100, 1)
+
+
 def _passes_stage1(quote: dict) -> bool:
     """Stage-1 filter: quality names only (Daneshire thesis: higher-priced stocks)."""
     price = quote.get("price", 0) or 0
@@ -59,6 +114,8 @@ class StockScanner:
         self.client = client if client is not None else FMPClient(api_key=api_key)
         self.cache_dir = cache_dir
         self.indicators = TechnicalIndicators()
+        # (ET date, SPY closes by date) — see ``_load_benchmark``.
+        self._benchmark: tuple[Optional[str], dict[str, float]] = (None, {})
 
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
@@ -96,6 +153,22 @@ class StockScanner:
             return [t for t in tickers if isinstance(t, str)]
         return list(cache_data.keys())
 
+    async def _load_benchmark(self) -> dict[str, float]:
+        """SPY closes for the earnings-reaction column, fetched once per ET
+        day (the FMP client caches the bars on disk too). Best effort: on
+        any failure the vs-SPY column is just empty."""
+        today = datetime.now(_ET).strftime("%Y-%m-%d")
+        if self._benchmark[0] != today:
+            try:
+                bars = await self.client.get_historical_data(BENCHMARK, days=252)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Benchmark {BENCHMARK} bars unavailable: {e}")
+                bars = None
+            closes = _closes_by_date(bars)
+            # Only memoize a real series, so a blip retries next scan.
+            self._benchmark = (today if closes else None, closes)
+        return self._benchmark[1]
+
     async def _process_ticker(self, ticker: str, quote: dict) -> Optional[dict]:
         """
         Process a single ticker with full technical analysis.
@@ -111,10 +184,23 @@ class StockScanner:
             if result is None:
                 return None
 
-            # Fetch earnings date
-            earnings = await self.client.get_earnings_date(ticker)
-            result["earnings_date"] = earnings["date"] if earnings else None
-            result["days_to_earnings"] = earnings["days_until"] if earnings else None
+            # Next and last report: one /stable/earnings call (#117 adds the
+            # last-report facts from the same response).
+            earnings = await self.client.get_earnings_info(ticker) or {}
+            result["earnings_date"] = earnings.get("next_date")
+            result["days_to_earnings"] = earnings.get("days_until")
+            last_date = earnings.get("last_date")
+            actual = earnings.get("last_eps_actual")
+            estimate = earnings.get("last_eps_estimate")
+            reaction, reaction_vs_spy = earnings_reaction(
+                _closes_by_date(hist_data), self._benchmark[1], last_date
+            )
+            result["last_earnings_date"] = last_date
+            result["last_eps_actual"] = actual
+            result["last_eps_estimate"] = estimate
+            result["eps_surprise_pct"] = eps_surprise_pct(actual, estimate)
+            result["earnings_reaction_pct"] = reaction
+            result["earnings_reaction_vs_spy"] = reaction_vs_spy
 
             return result
 
@@ -172,6 +258,13 @@ class StockScanner:
             "dist_50": trend["dist_50"] if trend else None,
             "dist_200": trend["dist_200"] if trend else None,
             "ma_slope": trend.get("ma_slope") if trend else None,
+            # Fact column (#117): % below the 52-week high, <= 0. A live
+            # price above the newest bar's high counts as at the high.
+            "pct_off_high": (
+                round(min(0.0, (current_price / range_52w["high_52w"] - 1) * 100), 2)
+                if range_52w["high_52w"]
+                else None
+            ),
             "range_position": range_52w["position_pct"],
             "high_52w": range_52w["high_52w"],
             "low_52w": range_52w["low_52w"],
@@ -192,6 +285,12 @@ class StockScanner:
     @staticmethod
     def _score_opportunity(result: dict) -> tuple[int, list[str], Optional[str]]:
         """
+        LEGACY SCORE (#117) — no longer the scanner's default sort. Kept
+        visible as a "Legacy score" column for one quarter so its forward
+        record stays comparable; remove around 2027-01-10. It was fit to five
+        hand-picked trades and its top 15 trailed SPY out-of-sample (ADR-0007
+        verdict, #114). Do not tune it.
+
         Score a stock opportunity. Two tracks (issue #49):
 
         - Recovery: >= 20% drawdown from the 52w high qualifies a stock for
@@ -426,6 +525,8 @@ class StockScanner:
         if quality_gate is not None:
             await quality_gate.preload(survivors)
 
+        await self._load_benchmark()
+
         # Stage 2: Deep analysis (parallel with semaphore)
         # Use lower concurrency to avoid rate limits
         results = results_out if results_out is not None else []
@@ -453,6 +554,7 @@ class StockScanner:
                             passed, fails = await quality_gate.evaluate(result)
                             result["quality_pass"] = passed
                             result["quality_fails"] = fails
+                            result["sector"] = quality_gate.sector(ticker)
                         results.append(result)
                     else:
                         errors += 1  # Track when we can't process a ticker
@@ -503,7 +605,10 @@ class StockScanner:
             logger.error("No stocks successfully analyzed in Stage 2")
             return scan_id, []
 
-        # Stage 3: Rank (scoring already happened per-ticker in Stage 2)
+        # Stage 3: order by the legacy score (scoring already happened
+        # per-ticker in Stage 2). The page sorts by fact columns (#117);
+        # this order only fixes scan_picks ranks, so they stay comparable
+        # with pre-#117 picks.
         sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
 
         if progress_callback:
@@ -526,6 +631,7 @@ class StockScanner:
         if not quote:
             return None
 
+        await self._load_benchmark()
         result = await self._process_ticker(ticker, quote)
         if result:
             score, signals, setup = self._score_opportunity(result)

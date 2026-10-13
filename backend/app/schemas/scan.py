@@ -79,7 +79,19 @@ class ScanResultItem(BaseModel):
     # quality_fails names each failed rule (e.g. "free cash flow").
     quality_pass: Optional[bool] = None
     quality_fails: list[str] = []
-    score: int
+    # Fact columns (#117). The page sorts on these; ``score`` is the legacy
+    # composite, shown for one quarter (remove ~2027-01-10).
+    pct_off_high: Optional[float] = None  # % below the 52-week high, <= 0
+    sector: Optional[str] = None  # from the quality gate's FMP profile
+    earnings_date: Optional[str] = None  # next report, YYYY-MM-DD
+    days_to_earnings: Optional[int] = None
+    last_earnings_date: Optional[str] = None
+    last_eps_actual: Optional[float] = None
+    last_eps_estimate: Optional[float] = None
+    eps_surprise_pct: Optional[float] = None  # > 0 beat, < 0 miss
+    earnings_reaction_pct: Optional[float] = None  # signed move around last report
+    earnings_reaction_vs_spy: Optional[float] = None  # same, minus SPY's move
+    score: int  # legacy score
     signals: list[str]
 
 
