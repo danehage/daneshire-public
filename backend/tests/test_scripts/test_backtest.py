@@ -237,6 +237,63 @@ def test_renamed_ticker_borrows_only_missing_pieces():
     assert D._with_alias(lambda s: f.statements("income-statement", s), "XYZ") == []
 
 
+def _reused_ticker_fetcher():
+    """FB as FMP serves it since 2022: a different security's earnings (non-
+    empty, 2023+), no prices; Facebook's history lives under META."""
+    bars = [{"date": d.strftime("%Y-%m-%d"), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}
+            for d in pd.bdate_range("2014-01-01", "2023-12-29")]
+    earn = {
+        "FB": [{"date": "2023-03-15", "epsActual": 9.0, "who": "reused"},
+               {"date": "2016-07-27", "epsActual": 1.0, "lastUpdated": "2016-07-28", "who": "FB-stale"}],
+        "META": [{"date": "2016-07-27", "epsActual": 1.1, "epsEstimated": 1.0, "lastUpdated": "2023-01-01", "who": "Facebook"},
+                 {"date": "2016-11-02", "epsActual": 1.2, "lastUpdated": "2023-01-01", "who": "Facebook"},
+                 {"date": "2021-10-25", "epsActual": 3.2, "lastUpdated": "2023-01-01", "who": "Facebook"}],
+    }
+    f = _StubFetcher({})
+    f.cache_only, f.misses = False, 0
+    f.bars = lambda s, a, b: bars if s in ("META", "SPY") else []
+    f.raw_bars = f.market_caps = lambda s, a, b: []
+    f.statements = lambda kind, s: []
+    f.earnings = lambda s: list(earn.get(s, []))
+    f.sector = lambda s: "Communication Services"
+    return f
+
+
+def test_reused_old_ticker_still_loads_the_renamed_companys_earnings(monkeypatch):
+    f = _reused_ticker_fetcher()
+    membership = [(date.min, frozenset({"FB"})), (date(2022, 6, 9), frozenset({"META"}))]
+    monkeypatch.setattr(D, "universe_symbols", lambda fetcher, mode, start: (membership, False))
+    ds = D.load_dataset(f, "pit500public", date(2016, 1, 1), date(2023, 12, 29))
+
+    fb = ds.tickers["FB"]["earnings"]
+    by_date = {r["date"]: r["who"] for r in fb}
+    # Facebook's pre-rename history loads even though FB itself isn't empty.
+    assert by_date["2016-11-02"] == by_date["2021-10-25"] == "Facebook"
+    # One row per report date; the most recently updated wins.
+    assert by_date["2016-07-27"] == "Facebook" and len(fb) == 4
+    # The reused ticker's row is present but dated after FB left the index,
+    # so the per-date membership check drops it downstream.
+    assert by_date["2023-03-15"] == "reused" and "FB" not in ds.members_at(date(2023, 3, 15))
+
+    from app.services.funnel import compute_earnings_factors
+
+    got = compute_earnings_factors(fb, ds.tickers["FB"]["bars"], date(2016, 8, 15))
+    assert got["report_date"] == date(2016, 7, 27) and got["eps_surprise"] == pytest.approx(0.1)
+
+
+def test_earnings_events_use_the_merged_rows(monkeypatch):
+    from scripts.backtest.earnings_events import build_events
+
+    f = _reused_ticker_fetcher()
+    membership = [(date.min, frozenset({"FB"})), (date(2022, 6, 9), frozenset({"META"}))]
+    monkeypatch.setattr(D, "universe_symbols", lambda fetcher, mode, start: (membership, False))
+    ds = D.load_dataset(f, "pit500public", date(2016, 1, 1), date(2023, 12, 29))
+    ev = build_events(ds, date(2016, 1, 1), date(2023, 12, 29))
+    fb = ev[ev["ticker"] == "FB"]
+    assert sorted(fb["report_date"].astype(str)) == ["2016-07-27", "2016-11-02", "2021-10-25"]
+    assert fb[fb["report_date"] == date(2016, 7, 27)]["eps_actual"].item() == 1.1
+
+
 def _cached_fetcher(tmp_path, cache_only, files):
     f = D.FMPFetcher("", tmp_path, cache_only=cache_only)
     for params, payload in files:

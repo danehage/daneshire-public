@@ -371,8 +371,9 @@ def universe_symbols(fetcher: FMPFetcher, mode: str, start: date) -> tuple[list[
 
 # Same company, new ticker. The public membership file keeps the old symbol
 # for dates before the rename, and FMP files some or all of that history
-# under the new one (FB's statements live under META). Used only to fill
-# pieces FMP returns empty for the old symbol. Fixed 2026-10-05 from the
+# under the new one (FB's statements live under META). Fills pieces FMP
+# returns empty for the old symbol; earnings merge both tickers instead
+# (merged_earnings: FMP reuses some old tickers). Fixed 2026-10-05 from the
 # fetch's coverage gaps, before any backtest result existed.
 RENAMES = {
     "FB": "META",     # Facebook -> Meta Platforms (2022)
@@ -391,6 +392,33 @@ def _with_alias(fn, sym: str, *args):
     if not got and sym in RENAMES:
         got = fn(RENAMES[sym], *args)
     return got
+
+
+def merged_earnings(fetcher: FMPFetcher, sym: str) -> list[dict]:
+    """``sym``'s earnings rows; for a renamed company, both tickers' rows.
+
+    The empty-only ``_with_alias`` fallback isn't enough here: FMP reuses
+    some old tickers (since 2022 ``FB`` is another security, so its earnings
+    come back non-empty and Facebook's history under ``META`` never loads).
+    Taking both and letting the per-date membership check drop the reused
+    ticker's later rows recovers the history.
+
+    One row per report date: the most recently updated (``lastUpdated``)
+    wins, and on a tie the old ticker's row, which is first in the list.
+    That is the pick ``earnings_events.build_events`` made from its own
+    merge (the ``earnings_rows`` helper this replaces), so its results don't
+    change. Undated rows are
+    dropped; nothing downstream can use them.
+    """
+    rows = fetcher.earnings(sym)
+    if sym not in RENAMES:
+        return rows
+    best: dict[date, dict] = {}
+    for r in sorted(rows + fetcher.earnings(RENAMES[sym]), key=lambda r: str(r.get("lastUpdated") or ""), reverse=True):
+        d = _d(r.get("date"))
+        if d is not None and d not in best:
+            best[d] = r
+    return [best[d] for d in sorted(best)]
 
 
 def fetch_all(fetcher: FMPFetcher, mode: str, start: date, end: date) -> None:
@@ -454,7 +482,7 @@ def load_dataset(fetcher: FMPFetcher, mode: str, start: date, end: date) -> Data
     history_start = date(start.year - 2, 1, 1)
     membership, biased = universe_symbols(fetcher, mode, start)
     syms = sorted(set().union(*(m for _, m in membership)))
-    tickers, missing_bars, missing_fund, missing_raw, missing_cap = {}, [], [], [], []
+    tickers, missing_bars, missing_fund, missing_raw, missing_cap, renamed_both = {}, [], [], [], [], []
     for sym in syms:
         bars = _frame(_with_alias(fetcher.bars, sym, history_start, end))
         if bars is None:
@@ -469,17 +497,24 @@ def load_dataset(fetcher: FMPFetcher, mode: str, start: date, end: date) -> Data
             missing_raw.append(sym)
         if "market_cap" not in bars.columns:
             missing_cap.append(sym)
+        # Statements keep the empty-only fallback. Merging both tickers (as
+        # earnings do) isn't safe here: statements_as_of keeps everything
+        # filed before a date, so a reused ticker's own older filings would
+        # be summed into the renamed company's TTM figures, and per-date
+        # membership doesn't filter them out. Flag the case instead.
         statements = lambda kind: _with_alias(lambda s: fetcher.statements(kind, s), sym)  # noqa: E731
         inc = statements("income-statement")
         if not inc:
             missing_fund.append(sym)
+        elif sym in RENAMES and fetcher.statements("income-statement", RENAMES[sym]):
+            renamed_both.append(sym)
         tickers[sym] = {
             "sector": _with_alias(fetcher.sector, sym),
             "bars": bars,
             "income": inc,
             "balance": statements("balance-sheet-statement"),
             "cashflow": statements("cash-flow-statement"),
-            "earnings": _with_alias(fetcher.earnings, sym),
+            "earnings": merged_earnings(fetcher, sym),
         }
     spy = _frame(fetcher.bars("SPY", history_start, end))
     if fetcher.cache_only and fetcher.misses:
@@ -499,6 +534,10 @@ def load_dataset(fetcher: FMPFetcher, mode: str, start: date, end: date) -> Data
             "missing_fundamentals": missing_fund,
             "missing_unadjusted_prices": missing_raw,
             "missing_market_cap": missing_cap,
+            # Renamed symbols whose old ticker has income statements of its
+            # own while the new one does too: possibly a reused ticker whose
+            # statements belong to another company. Check before trusting.
+            "renamed_with_statements_under_both_tickers": renamed_both,
         },
     )
 

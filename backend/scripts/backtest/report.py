@@ -91,6 +91,9 @@ def build_report(rows: pd.DataFrame, diags: pd.DataFrame, ds, meta: dict) -> tup
         L.append(f"- Dollar thresholds use unadjusted prices and historical market cap. Fell back to adjusted "
                  f"prices for {len(cov['missing_unadjusted_prices'])} symbols and to adjusted price x split-adjusted shares for "
                  f"{len(cov['missing_market_cap'])}; those can be wrongly screened out ahead of a later split.")
+    if cov.get("renamed_with_statements_under_both_tickers"):
+        L.append(f"- Renamed symbols with statements under both old and new tickers (old ticker used; check for a "
+                 f"reused ticker): {', '.join(cov['renamed_with_statements_under_both_tickers'])}.")
     L.append(f"- Rebalance: {meta['freq_label']}, {len(all_dates)} dates "
              f"({all_dates[0] if all_dates else '–'} → {all_dates[-1] if all_dates else '–'}); "
              f"in-sample {len(is_dates)}, out-of-sample {len(oos_dates)}.")

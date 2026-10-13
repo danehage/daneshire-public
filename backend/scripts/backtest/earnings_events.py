@@ -70,18 +70,7 @@ def _spy_idx(spy: _Arrays, day: np.datetime64) -> Optional[int]:
     return i if i < len(spy.dates) and spy.dates[i] == day else None
 
 
-def earnings_rows(fetcher: D.FMPFetcher, sym: str, rows: list[dict]) -> list[dict]:
-    """A renamed company's reports, from both tickers. FMP reuses some old
-    tickers (since 2022 FB is another security, so its rows aren't empty and
-    data._with_alias never reaches META). Membership is checked per report
-    date, so a reused ticker's later rows drop out there."""
-    if sym not in D.RENAMES:
-        return rows
-    return rows + fetcher.earnings(D.RENAMES[sym])
-
-
-def build_events(ds: D.Dataset, start: date, end: date, cfg: FunnelConfig = FunnelConfig(),
-                 fetcher: Optional[D.FMPFetcher] = None) -> pd.DataFrame:
+def build_events(ds: D.Dataset, start: date, end: date, cfg: FunnelConfig = FunnelConfig()) -> pd.DataFrame:
     spy = _Arrays(ds.spy)
     cost = COST_BPS / 1e4
     n_bars = bars_needed(cfg)
@@ -90,8 +79,9 @@ def build_events(ds: D.Dataset, start: date, end: date, cfg: FunnelConfig = Funn
         a = _Arrays(t["bars"])
         n = len(a.dates)
         seen = set()
-        earnings = earnings_rows(fetcher, sym, t["earnings"]) if fetcher else t["earnings"]
-        for e in sorted(earnings, key=lambda r: str(r.get("lastUpdated") or ""), reverse=True):
+        # A renamed company's rows already come from both tickers
+        # (data.merged_earnings); membership is checked per report date below.
+        for e in sorted(t["earnings"], key=lambda r: str(r.get("lastUpdated") or ""), reverse=True):
             d = D._d(e.get("date"))
             if d is None or d < start or d > end or d in seen:
                 continue
@@ -333,7 +323,7 @@ def main(argv=None) -> int:
     fetcher = D.FMPFetcher(key, args.cache_dir, cache_only=args.cache_only)
     ds = D.load_dataset(fetcher, "pit500public", args.start, args.end)
     logging.info("loaded %d symbols; building events", len(ds.tickers))
-    ev = build_events(ds, args.start, args.end, fetcher=fetcher)
+    ev = build_events(ds, args.start, args.end)
     ds.coverage["report_coverage"] = report_coverage(ds, ev, args.start, args.end)
     if ev.empty:
         print("no events", file=sys.stderr)
