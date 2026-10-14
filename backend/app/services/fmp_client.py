@@ -103,6 +103,19 @@ class FMPRequestError(Exception):
         super().__init__(f"FMP {where}{failure.describe()}")
 
 
+# US share classes: brokers and the static lists write BRK.B, FMP serves
+# BRK-B and answers HTTP 402 for the dotted form on our plan (#127). Only a
+# single trailing letter is rewritten, so multi-letter exchange suffixes
+# (SHOP.TO) pass through; a one-letter one (VOD.L) would not, but nothing
+# here queries foreign listings.
+_SHARE_CLASS_DOT_RE = re.compile(r"^([A-Z]{1,5})\.([A-Z])$")
+
+
+def fmp_symbol(ticker: str) -> str:
+    """The spelling FMP accepts for ``ticker`` (BRK.B -> BRK-B)."""
+    return _SHARE_CLASS_DOT_RE.sub(r"\1-\2", ticker.upper())
+
+
 def _num(v) -> Optional[float]:
     """Float or None; FMP sends numbers, nulls and the odd string."""
     try:
@@ -277,7 +290,7 @@ class FMPClient:
     async def get_quote(self, ticker: str) -> Optional[dict]:
         """Fetch a single stock quote."""
         try:
-            url = f"{self.BASE_URL}/stable/quote?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/quote?symbol={urlquote(fmp_symbol(ticker), safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(url)
 
@@ -337,7 +350,7 @@ class FMPClient:
         async with httpx.AsyncClient(timeout=15.0) as client:
             for i in range(0, total, self.BATCH_QUOTE_CHUNK):
                 chunk = tickers[i : i + self.BATCH_QUOTE_CHUNK]
-                symbols = ",".join(chunk)
+                symbols = ",".join(fmp_symbol(t) for t in chunk)
                 url = (
                     f"{self.BASE_URL}/stable/batch-quote"
                     f"?symbols={urlquote(symbols, safe=',')}&apikey={self.api_key}"
@@ -391,7 +404,7 @@ class FMPClient:
                     for ticker in chunk:
                         single_url = (
                             f"{self.BASE_URL}/stable/quote"
-                            f"?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
+                            f"?symbol={urlquote(fmp_symbol(ticker), safe='')}&apikey={self.api_key}"
                         )
                         single = await self._request_with_retry(single_url, client)
                         if single is not None:
@@ -440,7 +453,7 @@ class FMPClient:
                 return cached[-days:]
 
         try:
-            url = f"{self.BASE_URL}/stable/historical-price-eod/full?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/historical-price-eod/full?symbol={urlquote(fmp_symbol(ticker), safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await self._request_with_retry(url, client)
 
@@ -550,7 +563,7 @@ class FMPClient:
         misleading "ticker not found" 404.
         """
         try:
-            url = f"{self.BASE_URL}/stable/profile?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/profile?symbol={urlquote(fmp_symbol(ticker), safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
                 # Read last_failure before any further await: it is shared
@@ -574,7 +587,7 @@ class FMPClient:
         those fields moved to /stable/ratios-ttm.
         """
         try:
-            url = f"{self.BASE_URL}/stable/ratios-ttm?symbol={urlquote(ticker, safe='')}&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/ratios-ttm?symbol={urlquote(fmp_symbol(ticker), safe='')}&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
                 if response:
@@ -600,7 +613,7 @@ class FMPClient:
         try:
             url = (
                 f"{self.BASE_URL}/stable/{kind}"
-                f"?symbol={urlquote(ticker, safe='')}&period=quarter&limit={limit}&apikey={self.api_key}"
+                f"?symbol={urlquote(fmp_symbol(ticker), safe='')}&period=quarter&limit={limit}&apikey={self.api_key}"
             )
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
@@ -626,7 +639,7 @@ class FMPClient:
         try:
             url = (
                 f"{self.BASE_URL}/stable/news/stock"
-                f"?symbols={urlquote(ticker, safe='')}&limit={limit}&apikey={self.api_key}"
+                f"?symbols={urlquote(fmp_symbol(ticker), safe='')}&limit={limit}&apikey={self.api_key}"
             )
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await self._request_with_retry(url, client)
@@ -664,7 +677,7 @@ class FMPClient:
             # /stable/earnings replaces the legacy-gated /api/v3/earning_calendar
             # (dead on this plan since the 2025-08-31 cutoff — every call
             # returned an error payload, so earnings dates were silently None).
-            url = f"{self.BASE_URL}/stable/earnings?symbol={urlquote(ticker, safe='')}&limit=8&apikey={self.api_key}"
+            url = f"{self.BASE_URL}/stable/earnings?symbol={urlquote(fmp_symbol(ticker), safe='')}&limit=8&apikey={self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(url)
 
