@@ -405,3 +405,33 @@ async def test_owner_ticker_earnings_still_includes_trades(seeded_trade):
     trades = response.json()["recent_trades"]
     assert len(trades) == 1
     assert trades[0]["ticker"] == _LEAK_TICKER
+
+
+async def test_guest_cannot_reach_the_decision_log(auth_client):
+    """#119: decisions are personal and POST spends FMP quotes. /api/decisions
+    is outside the guest allowlist, so every method answers 403 before any
+    route (or the database) is touched."""
+    for method, path in (
+        ("GET", "/api/decisions"),
+        ("GET", "/api/decisions?ticker=AAPL"),
+        ("GET", "/api/decisions/summary"),
+        ("POST", "/api/decisions"),
+        ("DELETE", "/api/decisions/00000000-0000-0000-0000-000000000000"),
+    ):
+        response = await auth_client.request(
+            method,
+            path,
+            headers=GUEST,
+            json={"ticker": "AAPL"} if method == "POST" else None,
+        )
+        assert response.status_code == 403, (method, path)
+        assert response.json()["detail"] == "This section requires owner access"
+
+
+def test_decision_log_is_not_under_a_guest_prefix():
+    """Guards the design choice: a route under /api/ticker would leak."""
+    from app.main import BasicAuthMiddleware
+
+    mw = BasicAuthMiddleware(app=None)
+    assert not mw._is_guest_allowed("/api/decisions")
+    assert not mw._is_guest_allowed("/api/decisions/summary")

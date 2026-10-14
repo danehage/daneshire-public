@@ -8,6 +8,7 @@ from app.models.earnings_trades import EarningsTrade
 from app.models.iv_snapshots import IVSnapshot
 from app.models.scan_history import ScanPick
 from app.models.fundamentals import FundamentalsSnapshot
+from app.models.decision import Decision, DecisionOutcome
 
 __all__ = [
     "Base",
@@ -21,4 +22,6 @@ __all__ = [
     "IVSnapshot",
     "ScanPick",
     "FundamentalsSnapshot",
+    "Decision",
+    "DecisionOutcome",
 ]

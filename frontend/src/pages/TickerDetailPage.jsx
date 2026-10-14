@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useTickerAnalysis, useTickerWatchlistItem } from "../hooks/useTicker";
 import { useCreateWatchlistItem } from "../hooks/useWatchlist";
@@ -7,6 +8,9 @@ import EarningsCard from "../components/EarningsCard";
 import ContextBlock from "../components/ContextBlock";
 import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
 import { useShareMode, MASKED_MONEY } from "../hooks/useShareMode";
+import { useDecisions } from "../hooks/useDecisions";
+import DecisionForm from "../components/DecisionForm";
+import DecisionList from "../components/DecisionList";
 
 function TradeCampaignsStrip({ ticker }) {
   const { data: campaigns } = useTradeCampaigns({ ticker });
@@ -152,6 +156,25 @@ function formatVolume(value) {
   return value.toLocaleString();
 }
 
+// Owner-only: past buy/pass calls on this ticker with their excess
+// returns vs SPY (#119). Rendered only for the owner, so a guest never
+// fires the (403) query.
+function TickerDecisions({ ticker }) {
+  const { data: decisions, isLoading } = useDecisions({ ticker });
+  if (isLoading || !decisions || decisions.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-bold uppercase tracking-wide">
+        Decisions{" "}
+        <Link to="/decisions" className="font-normal normal-case text-accent hover:underline">
+          all results
+        </Link>
+      </h3>
+      <DecisionList decisions={decisions} showTicker={false} />
+    </div>
+  );
+}
+
 export default function TickerDetailPage() {
   const { symbol } = useParams();
   const {
@@ -163,6 +186,7 @@ export default function TickerDetailPage() {
     useTickerWatchlistItem(symbol);
   const addToWatchlist = useCreateWatchlistItem();
   const role = useRole();
+  const [deciding, setDeciding] = useState(false);
 
   const handleAddToWatchlist = () => {
     addToWatchlist.mutate({
@@ -241,6 +265,14 @@ export default function TickerDetailPage() {
               className="px-6 py-3 bg-accent text-warm-white font-medium uppercase tracking-wide border-2 border-ink shadow-hard hover:bg-accent-hover disabled:opacity-50"
             >
               {addToWatchlist.isPending ? "Adding..." : "+ Add to Watchlist"}
+            </button>
+          )}
+          {role === "owner" && (
+            <button
+              onClick={() => setDeciding(true)}
+              className="px-4 py-3 bg-warm-white text-ink font-medium uppercase tracking-wide border-2 border-ink shadow-hard hover:bg-cream"
+            >
+              Record decision
             </button>
           )}
           {watchlistItem && (
@@ -427,6 +459,16 @@ export default function TickerDetailPage() {
 
       {/* Vault trade campaigns (owner-only, synced from DaneBrain — #61) */}
       {role === "owner" && <TradeCampaignsStrip ticker={symbol.toUpperCase()} />}
+
+      {role === "owner" && <TickerDecisions ticker={symbol.toUpperCase()} />}
+
+      {deciding && (
+        <DecisionForm
+          ticker={analysis.ticker}
+          source="ticker"
+          onClose={() => setDeciding(false)}
+        />
+      )}
 
       {/* Watchlist Data (if on watchlist) */}
       {watchlistItem && (

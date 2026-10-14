@@ -251,6 +251,66 @@ CREATE INDEX idx_alert_history_triggered ON alert_history(condition_met)
     WHERE condition_met = true;
 ```
 
+### decisions & decision_outcomes
+
+The decision log (#119): every buy/pass call, frozen when it was made and
+scored against SPY at 21 / 63 / 126 sessions. It measures Dane's judgment,
+since the scanner itself no longer predicts anything. Both tables are
+insert-only, enforced by a `BEFORE UPDATE` trigger
+(`reject_decision_log_update()`). The one UPDATE it lets through is a
+foreign-key `ON DELETE SET NULL` nulling `scan_pick_id` / `supersedes_id`.
+No backfill: a call entered after the fact is written with the outcome
+known.
+
+```sql
+CREATE TABLE decisions (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticker            VARCHAR(10) NOT NULL,          -- uppercased
+    decision          VARCHAR(4) NOT NULL,           -- buy | pass
+    conviction        SMALLINT NOT NULL,             -- 1-5
+    thesis            VARCHAR(280) NOT NULL,
+    invalidation      VARCHAR(280) NOT NULL,         -- what would prove it wrong
+    price_at_decision NUMERIC(12,4) NOT NULL,        -- server-side FMP quote
+    spy_at_decision   NUMERIC(12,4) NOT NULL,        -- same request as the ticker
+    source            VARCHAR(10) NOT NULL DEFAULT 'manual',  -- scanner | ticker | manual
+    scan_pick_id      UUID REFERENCES scan_picks(id) ON DELETE SET NULL,
+    supersedes_id     UUID REFERENCES decisions(id) ON DELETE SET NULL,
+    tags              TEXT[] NOT NULL DEFAULT '{}',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),  -- the decision time
+    CONSTRAINT valid_decision_call CHECK (decision IN ('buy','pass')),
+    CONSTRAINT valid_decision_conviction CHECK (conviction BETWEEN 1 AND 5),
+    CONSTRAINT valid_decision_source CHECK (source IN ('scanner','ticker','manual'))
+);
+CREATE INDEX idx_decisions_ticker_created_at ON decisions(ticker, created_at DESC);
+CREATE INDEX idx_decisions_created_at ON decisions(created_at DESC);
+
+CREATE TABLE decision_outcomes (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    decision_id      UUID NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    horizon_sessions SMALLINT NOT NULL,              -- 21 | 63 | 126
+    status           VARCHAR(10) NOT NULL,           -- scored | truncated | no_data
+    exit_date        DATE,
+    exit_price       NUMERIC(12,4),
+    spy_exit_price   NUMERIC(12,4),
+    ticker_return    NUMERIC(10,6),
+    spy_return       NUMERIC(10,6),
+    excess_return    NUMERIC(10,6),                  -- ticker − SPY; passes not flipped
+    scored_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_decision_outcomes_decision_horizon UNIQUE (decision_id, horizon_sessions)
+);
+```
+
+Scoring rules (`backend/app/services/decision_scoring.py`): sessions are
+counted on SPY's own bars, so session 1 is the first SPY close after
+`created_at`. Returns are price returns from the stored quotes, with no
+costs. A ticker whose data ends before the exit, with SPY more than 5
+sessions past its last bar, is scored at its last close (`truncated`).
+Nothing for 10 sessions past due gives `no_data`, which is excluded from
+stats. A quote that disagrees with the prior adjusted close by a
+split-sized ratio (more than 1.5×) anchors both legs on that close
+instead.
+
 ---
 
 ## API Routes
@@ -312,6 +372,20 @@ GET    /api/alerts/{id}/history           → evaluation history for an alert
 POST   /api/alerts/evaluate               → manually trigger alert engine (for testing)
 ```
 
+### Decisions (owner-only, #119)
+
+```
+POST   /api/decisions                     → record a buy/pass call; the server takes the ticker + SPY
+                                             quotes in one request (502, nothing written, if either fails).
+                                             Price and timestamp can't be supplied (422). scan_id resolves to
+                                             a scan_picks row when the ticker is in that scan's record
+GET    /api/decisions?ticker=&decision=&limit=  → newest first, outcomes embedded
+GET    /api/decisions/summary             → buy/pass × conviction × horizon: n, mean/median excess, hit rate
+DELETE /api/decisions/{id}                → only within 15 min of created_at, then 409 (supersede instead)
+```
+
+No PATCH. Deliberately not under `/api/ticker/*`, which guests can reach.
+
 ### Ticker Data (pass-through to FMP + earnings source)
 
 ```
@@ -352,6 +426,14 @@ POST /api/internal/portfolio/run-plateau-checks
      → logs each evaluation to holding_grade_history (append-only)
      → Pushover on any grade worsening + one daily refresher while
        deteriorated (high priority for Climax/Broken); silent on recovery
+
+POST /api/internal/decisions/score
+     → intended weekdays 18:30 ET, after EOD bars post (#119; the scheduler
+       job is not created yet)
+     → inserts decision_outcomes rows for every due, unscored horizon
+     → idempotent: only missing (decision, horizon) rows, ON CONFLICT DO
+       NOTHING, so retries are safe and a missed day catches up
+     → 502 if SPY history is unavailable (nothing written)
 ```
 
 Secure these with a shared secret header (`X-Scheduler-Secret`) so they can't be hit externally.
@@ -383,6 +465,11 @@ Secure these with a shared secret header (`X-Scheduler-Secret`) so they can't be
 - Journal timeline for this ticker
 - Active alerts for this ticker
 - Quick actions: add target, add note, create alert
+
+### Decisions (`/decisions`, owner-only)
+- Summary grid: buy/pass × conviction rows, 21/63/126-session columns; each cell shows mean excess vs SPY, n and hit rate, greyed when n < 10
+- The full log below it, filterable by call
+- Calls are recorded from a "Decide" button on scanner rows and "Record decision" on the ticker page (with that ticker's past calls listed there), and show as read-only rows in the journal feed
 
 ### Alerts
 - Active alerts list with status indicators

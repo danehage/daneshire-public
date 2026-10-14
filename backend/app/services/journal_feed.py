@@ -1,4 +1,5 @@
-"""Builds the merged journal feed: app-authored rows + vault projections.
+"""Builds the merged journal feed: app-authored rows + vault projections +
+decision-log rows (#119), the last two read-only.
 
 Shared by ``GET /api/journal`` and the dashboard's recent-activity list so
 both surfaces show the same picture (the vault is where Dane actually
@@ -10,6 +11,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.decision import Decision
 from app.models.journal import JournalEntry
 from app.models.trade_campaigns import TradeCampaign
 from app.models.watchlist import WatchlistItem
@@ -52,7 +54,7 @@ async def build_journal_feed(
         for row in result.all()
     ]
 
-    # Archived campaigns are files deleted from the vault — the mirror
+    # Archived campaigns are files deleted from the vault â€” the mirror
     # respects the deletion, so they don't feed the journal either.
     campaign_query = select(TradeCampaign).where(TradeCampaign.status != "archived")
     if ticker:
@@ -61,7 +63,40 @@ async def build_journal_feed(
     for campaign in campaigns:
         feed.extend(parse_campaign_entries(campaign))
 
+    # Decisions are their own insert-only table; they join the timeline as
+    # read-only virtual rows, like the vault entries above.
+    if entry_type in (None, DECISION_ENTRY_TYPE):
+        decision_query = select(Decision).order_by(Decision.created_at.desc()).limit(limit)
+        if ticker:
+            decision_query = decision_query.where(Decision.ticker == ticker.upper())
+        decisions = (await db.execute(decision_query)).scalars().all()
+        feed.extend(decision_feed_entry(d) for d in decisions)
+
     if entry_type:
         feed = [e for e in feed if e.entry_type == entry_type]
     feed.sort(key=lambda e: e.created_at, reverse=True)
     return feed[:limit]
+
+
+DECISION_ENTRY_TYPE = "decision"
+
+
+def decision_feed_entry(decision: Decision) -> JournalFeedEntry:
+    call = decision.decision.upper()
+    content = (
+        f"**{call}** at ${decision.price_at_decision:,.2f} "
+        f"(SPY ${decision.spy_at_decision:,.2f}) · conviction {decision.conviction}/5\n\n"
+        f"**Thesis:** {decision.thesis}\n\n"
+        f"**Wrong if:** {decision.invalidation}"
+    )
+    return JournalFeedEntry(
+        id=f"decision:{decision.id}",
+        source="decision",
+        decision_id=decision.id,
+        ticker=decision.ticker,
+        title=f"{decision.decision.capitalize()} · conviction {decision.conviction}",
+        entry_type=DECISION_ENTRY_TYPE,
+        content=content,
+        created_at=decision.created_at,
+        updated_at=decision.created_at,
+    )

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useUniverses, useScan, useLatestScan } from "../hooks/useScanner";
 import { useCreateWatchlistItem } from "../hooks/useWatchlist";
 import { useRole } from "../hooks/useMe";
+import DecisionForm from "../components/DecisionForm";
 
 function UniverseSelector({ value, onChange, universes }) {
   return (
@@ -314,7 +315,7 @@ function MaMark({ label, dist }) {
   );
 }
 
-function ResultRow({ result, onAddToWatchlist, isAdding }) {
+function ResultRow({ result, onAddToWatchlist, isAdding, onDecide }) {
   const [expanded, setExpanded] = useState(false);
   const failedGate = result.quality_pass === false;
 
@@ -388,6 +389,15 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
               className="px-3 py-1 text-xs font-medium uppercase tracking-wide border-2 border-ink bg-accent text-warm-white hover:bg-accent-hover shadow-hard-sm disabled:opacity-50"
             >
               {isAdding ? "..." : "+ Add"}
+            </button>
+          )}
+          {onDecide && (
+            <button
+              onClick={() => onDecide(result)}
+              className="ml-2 px-3 py-1 text-xs font-medium uppercase tracking-wide border-2 border-ink bg-warm-white text-ink hover:bg-cream"
+              title="Record a buy/pass call (#119)"
+            >
+              Decide
             </button>
           )}
         </td>
@@ -500,7 +510,7 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
   );
 }
 
-function ResultsTable({ results, onAddToWatchlist, addingTicker, sort, onSort }) {
+function ResultsTable({ results, onAddToWatchlist, addingTicker, sort, onSort, onDecide }) {
   if (!results || results.length === 0) {
     return (
       <div className="text-center py-12 text-mid-brown">
@@ -534,6 +544,7 @@ function ResultsTable({ results, onAddToWatchlist, addingTicker, sort, onSort })
               result={result}
               onAddToWatchlist={onAddToWatchlist}
               isAdding={addingTicker === result.ticker}
+              onDecide={onDecide}
             />
           ))}
         </tbody>
@@ -565,6 +576,7 @@ export default function ScannerPage() {
 
   const addToWatchlist = useCreateWatchlistItem();
   const role = useRole();
+  const [deciding, setDeciding] = useState(null); // scan row for DecisionForm (#119)
 
   // With no scan started in this session, open on the last saved scan
   // (#126). A full scan takes ~16-40 min, so that's usually what to read.
@@ -752,8 +764,18 @@ export default function ScannerPage() {
             addingTicker={addingTicker}
             sort={sort}
             onSort={handleSort}
+            onDecide={role === "owner" ? setDeciding : null}
           />
         </div>
+      )}
+
+      {deciding && (
+        <DecisionForm
+          ticker={deciding.ticker}
+          source="scanner"
+          scanId={results?.scan_id}
+          onClose={() => setDeciding(null)}
+        />
       )}
 
       {/* Loading results */}

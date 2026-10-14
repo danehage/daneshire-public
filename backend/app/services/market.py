@@ -492,15 +492,38 @@ class MarketData:
             lambda: self._fetch_history(symbol, days),
         )
 
-    async def _fetch_history(self, ticker: str, days: int) -> HistoryFrame:
+    async def _fetch_history(
+        self, ticker: str, days: int, use_cache: bool = True
+    ) -> HistoryFrame:
         try:
-            raw = await self.client.get_historical_data(ticker, days=days)
+            if use_cache:
+                raw = await self.client.get_historical_data(ticker, days=days)
+            else:
+                raw = await self.client.get_historical_data(
+                    ticker, days=days, use_cache=False, save_cache=False
+                )
         except Exception as exc:  # noqa: BLE001
             raise UpstreamError(ticker, str(exc)) from exc
         if not raw:
             raise TickerNotFound(ticker)
         bars = tuple(HistoryBar(**_normalise_bar(b)) for b in raw)
         return HistoryFrame(ticker=ticker, bars=bars)
+
+    async def history_uncached(self, ticker: str, days: int = 252) -> HistoryFrame:
+        """History straight from FMP, skipping the TTL cache and the
+        client's per-day file.
+
+        For the decision scorer (#119), which runs after the close: a series
+        cached earlier in the day can be missing today's bar or carry a
+        partial one, and an exit must be scored on the final close.
+        """
+        return await self._fetch_history(ticker.upper(), days, use_cache=False)
+
+    def upstream_failure(self) -> Optional[str]:
+        """Public form of ``_upstream_failure``: the client's last failure
+        if it was the provider's fault, else None. Lets a caller tell an
+        outage from a genuine "no data" answer after ``TickerNotFound``."""
+        return self._upstream_failure()
 
     # -- earnings calendar --------------------------------------------------
 

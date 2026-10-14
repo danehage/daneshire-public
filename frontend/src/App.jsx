@@ -12,6 +12,7 @@ import PortfolioPage from "./pages/PortfolioPage";
 import EarningsPage from "./pages/EarningsPage";
 import TradesPage from "./pages/TradesPage";
 import TradeCampaignPage from "./pages/TradeCampaignPage";
+import DecisionsPage from "./pages/DecisionsPage";
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
           <Route path="/portfolio" element={<OwnerRoute><PortfolioPage /></OwnerRoute>} />
           <Route path="/trades" element={<OwnerRoute><TradesPage /></OwnerRoute>} />
           <Route path="/trades/:campaignId" element={<OwnerRoute><TradeCampaignPage /></OwnerRoute>} />
+          <Route path="/decisions" element={<OwnerRoute><DecisionsPage /></OwnerRoute>} />
         </Routes>
       </Layout>
       </ShareModeProvider>

@@ -34,6 +34,7 @@ export const ENTRY_TYPE_TONES = {
   exit: "error",
   adjustment: "warning",
   review: "mid-brown",
+  decision: "neutral",
 };
 
 export default function Badge({

@@ -31,6 +31,7 @@ from app.models.watchlist import WatchlistItem
 from app.routes.dependencies import get_alert_engine, get_portfolio_engine
 from app.schemas.alert_runs import RunSummary
 from app.schemas.backup import BackupResponse
+from app.schemas.decision import DecisionScoreSummary
 from app.schemas.earnings import (
     BackfillRealizedMovesSummary,
     CalendarRefreshSummary,
@@ -41,6 +42,7 @@ from app.schemas.earnings import (
 from app.schemas.iv import IVSnapshotRaw
 from app.services.alert_engine import AlertEngine
 from app.services.backup import run_backup
+from app.services.decision_scoring import SpyHistoryUnavailable, score_due_decisions
 from app.services.indicators import current_et_time, is_regular_session
 from app.services.market import MarketData, EarningsDateUnknown, MarketDataError, get_market, compute_realized_move
 from app.services import plateau
@@ -1083,6 +1085,29 @@ async def run_plateau_checks(
     engine lives in :mod:`app.services.plateau`.
     """
     return await plateau.run_plateau_checks(db, engine, market)
+
+
+@router.post("/decisions/score", response_model=DecisionScoreSummary)
+async def score_decisions(
+    _: None = Depends(verify_scheduler_secret),
+    market: MarketData = Depends(get_market),
+    db: AsyncSession = Depends(get_db),
+    now_et: datetime = Depends(get_now_et),
+):
+    """Score decision-log outcomes that have come due (#119).
+
+    Meant for a weekday 18:30 ET Cloud Scheduler job, after EOD bars post.
+    Idempotent: it only inserts (decision, horizon) rows that don't exist
+    yet, so a retry or a manual re-run is safe and a missed day catches up
+    on the next run. 502 when SPY history can't be fetched, since no
+    session can be counted without it; nothing is written in that case.
+    """
+    try:
+        return await score_due_decisions(db, market, now_et)
+    except SpyHistoryUnavailable as exc:
+        raise HTTPException(
+            status_code=502, detail=f"decision scoring: SPY history unavailable ({exc})"
+        )
 
 
 @router.get("/health")

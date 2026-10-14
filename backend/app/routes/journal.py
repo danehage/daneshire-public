@@ -67,7 +67,9 @@ async def create_journal_entry(
 @router.get("/api/journal", response_model=list[JournalFeedEntry])
 async def list_all_journal_entries(
     ticker: str | None = Query(default=None, description="Filter by ticker symbol"),
-    entry_type: Literal["thesis", "note", "entry", "exit", "adjustment", "review"] | None = None,
+    entry_type: Literal[
+        "thesis", "note", "entry", "exit", "adjustment", "review", "decision"
+    ] | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):

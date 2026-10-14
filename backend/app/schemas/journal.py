@@ -48,12 +48,15 @@ class JournalFeedEntry(BaseModel):
     UUID, editable/deletable). ``source="vault"`` entries are parsed at read
     time from synced campaign bodies — read-only, with a synthetic
     ``vault:{campaign_id}:{section}`` id and ``campaign_id`` set for linking.
+    ``source="decision"`` entries are decision-log rows (#119), read-only
+    (``decision:{decision_id}``), ``entry_type="decision"``.
     """
 
     id: str
-    source: Literal["app", "vault"] = "app"
+    source: Literal["app", "vault", "decision"] = "app"
     watchlist_id: Optional[UUID] = None
     campaign_id: Optional[UUID] = None
+    decision_id: Optional[UUID] = None
     ticker: Optional[str] = None
     title: Optional[str] = None
     entry_type: str

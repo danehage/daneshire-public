@@ -24,7 +24,12 @@ const TYPE_COLORS = {
   exit: "bg-error text-warm-white",
   adjustment: "bg-warning text-warm-white",
   review: "bg-light-brown text-warm-white",
+  decision: "bg-dark-brown text-warm-white",
 };
+
+// The feed filter also offers decision-log rows (#119); they're recorded
+// from the scanner or a ticker page, not from the new-entry form.
+const FILTER_TYPES = [...ENTRY_TYPES, { value: "decision", label: "Decision" }];
 
 function AddStandaloneEntryForm({ onClose }) {
   const [ticker, setTicker] = useState("");
@@ -187,7 +192,7 @@ export default function JournalPage() {
           className="px-3 py-2 border-2 border-ink bg-warm-white text-sm"
         >
           <option value="">All Types</option>
-          {ENTRY_TYPES.map((type) => (
+          {FILTER_TYPES.map((type) => (
             <option key={type.value} value={type.value}>
               {type.label}
             </option>
@@ -232,11 +237,20 @@ export default function JournalPage() {
                       Vault
                     </Link>
                   )}
+                  {entry.source === "decision" && (
+                    <Link
+                      to="/decisions"
+                      className="text-xs px-2 py-0.5 border border-ink bg-cream text-mid-brown uppercase tracking-wide hover:text-ink hover:bg-warm-white"
+                      title="From the decision log: read-only. Click for results."
+                    >
+                      Decision log
+                    </Link>
+                  )}
                   <span className="text-xs text-light-brown">
                     {formatDate(entry.created_at, entry.source === "vault")}
                   </span>
                 </div>
-                {entry.source !== "vault" && (
+                {entry.source === "app" && (
                   <button
                     onClick={() => deleteEntry.mutate(entry.id)}
                     disabled={deleteEntry.isPending}
