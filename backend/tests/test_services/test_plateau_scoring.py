@@ -17,8 +17,9 @@ Acceptance (from the #57 issue): NFLX/ESTC = Climax, APD/EOG sell-ish,
 AJG = Running with a sell-pressure score materially below the other four,
 and underwater holdings read Broken — never Running.
 
-pre_entry_high_52w is computed from the fixture bars before the open date,
-mirroring exactly what the run-plateau-checks endpoint does in production.
+Each fixture is graded through ``app.services.plateau.grade_bars`` — the
+windowing (pre-entry 52w high from the bars before the open date, 252-bar
+grading window) that the run-plateau-checks endpoint runs in production.
 """
 
 import json
@@ -28,7 +29,9 @@ from typing import Optional
 import pandas as pd
 import pytest
 
+from app.schemas.market import HistoryBar
 from app.services.indicators import TechnicalIndicators
+from app.services.plateau import grade_bars
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "plateau"
 
@@ -52,41 +55,21 @@ def _grade_fixture(
     open_date: Optional[str],
     entry_price: Optional[float],
 ) -> dict:
-    """Load a frozen fixture and run the plateau grade path.
-
-    Mirrors run-plateau-checks: pre-entry 52w high from the 252 bars ending at
-    the open date, grading window = last 252 bars up to the as-of date.
+    """Load a frozen fixture, truncate it at ``as_of`` and grade it through
+    :func:`app.services.plateau.grade_bars` — the same windowing + grading
+    function run-plateau-checks calls in production.
     """
     with open(FIXTURES / f"{ticker}.json") as f:
         rows = json.load(f)
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df[df["date"] <= pd.Timestamp(as_of)].sort_values("date").reset_index(drop=True)
-
-    pre_entry_high = None
-    if open_date is not None:
-        pre = df[df["date"] <= pd.Timestamp(open_date)].tail(252)
-        if len(pre) >= 60:
-            pre_entry_high = float(pre["high"].max())
-
-    df = df.tail(252).reset_index(drop=True)
-    current_price = float(df["close"].iloc[-1])
-    metrics = TechnicalIndicators.calculate_plateau_metrics(
-        current_price=current_price,
-        df=df,
-        open_date=open_date,
-        pre_entry_high_52w=pre_entry_high,
-        entry_price=entry_price,
-    )
-    assert metrics is not None, f"{ticker}: calculate_plateau_metrics returned None"
-    metrics["price"] = current_price
-    label, score, signals, stop = TechnicalIndicators.grade_holding(metrics)
+    bars = [HistoryBar(**r) for r in rows if r["date"] <= as_of]
+    grade = grade_bars(bars, open_date, entry_price)
+    assert grade is not None, f"{ticker}: calculate_plateau_metrics returned None"
     return {
-        "label": label,
-        "score": score,
-        "signals": signals,
-        "stop": stop,
-        **metrics,
+        "label": grade.label,
+        "score": grade.score,
+        "signals": grade.signals,
+        "stop": grade.stop_suggestion,
+        **grade.metrics,
     }
 
 

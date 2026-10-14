@@ -19,9 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.main import app
 from app.models.portfolio import Account, HoldingGradeHistory
-from app.routes import internal
 from app.routes.dependencies import get_portfolio_engine
 from app.schemas.market import HistoryBar, HistoryFrame
+from app.services import plateau
 from app.services.market import get_market
 from app.services.portfolio_engine import ComputedHolding
 
@@ -111,14 +111,14 @@ class _FakePushover:
 
 
 def _install(monkeypatch, pushover: _FakePushover):
-    monkeypatch.setattr(internal, "PushoverClient", lambda: pushover)
+    monkeypatch.setattr(plateau, "PushoverClient", lambda: pushover)
     monkeypatch.setattr(
-        internal.TechnicalIndicators,
+        plateau.TechnicalIndicators,
         "calculate_plateau_metrics",
         staticmethod(lambda **kwargs: {"atr14": None, "hv_now": None}),
     )
     monkeypatch.setattr(
-        internal.TechnicalIndicators,
+        plateau.TechnicalIndicators,
         "grade_holding",
         staticmethod(lambda metrics: ("Broken", 7, ["below 50MA"], None)),
     )
