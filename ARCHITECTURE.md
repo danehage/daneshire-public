@@ -260,6 +260,9 @@ CREATE INDEX idx_alert_history_triggered ON alert_history(condition_met)
 ```
 GET  /api/scan/universes          → list available universes + sizes (never calls FMP;
                                      `combined` size is null until this instance builds it)
+GET  /api/scan/latest              → most recent scan saved to scan_picks (ranker='scanner'), shaped like
+                                     /{scan_id}/results plus saved: true; gate-passing rows only;
+                                     404 if none saved. Guest-allowed (DB read only)
 POST /api/scan/execute             → start scan (returns scan_id + universe_source, streams progress via SSE)
 GET  /api/scan/{scan_id}/stream    → SSE endpoint for scan progress
 GET  /api/scan/{scan_id}/results   → get completed scan results

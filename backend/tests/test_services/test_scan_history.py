@@ -56,6 +56,54 @@ async def test_records_full_list_flagging_legacy_top_n(db_session):
         await db_session.commit()
 
 
+async def test_latest_saved_scan_reads_back_the_newest_scan(client, db_session):
+    """GET /api/scan/latest rebuilds the newest scan's rows in rank order (#126)."""
+    older, newer = str(uuid.uuid4()), str(uuid.uuid4())
+    # Far-future timestamps so rows other tests leave behind can't be newer.
+    t_old = datetime(2199, 1, 1, tzinfo=timezone.utc)
+    t_new = t_old + timedelta(days=7)
+    results = _results(3)
+    results[0].update(
+        support=48.0, resistance=55.0, volume=1_000_000, avg_volume=900_000,
+        volume_pace=1.2, volume_pace_reliable=False, momentum_10d=-2.5,
+        sector="Industrials", pct_off_high=-12.0,
+    )
+    results[1]["quality_pass"] = False  # gate failure: never recorded
+    try:
+        await record_scan_picks(db_session, older, "sp500", _results(2), scanned_at=t_old)
+        await record_scan_picks(db_session, newer, "combined_screener", results, scanned_at=t_new)
+
+        res = await client.get("/api/scan/latest")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["scan_id"] == newer
+        assert body["saved"] is True
+        assert body["universe"] == "combined_screener"
+        assert body["scanned_at"].startswith("2199-01-08")
+        assert [r["ticker"] for r in body["results"]] == ["T00", "T02"]
+        assert body["total_analyzed"] == 2
+
+        first = body["results"][0]
+        assert first["price"] == 50.0 and first["score"] == 100
+        assert first["setup"] == "Basing"
+        assert first["support"] == 48.0 and first["resistance"] == 55.0
+        assert first["volume"] == 1_000_000 and first["avg_volume"] == 900_000
+        assert first["volume_pace"] == 1.2
+        assert first["volume_pace_reliable"] is False
+        assert first["momentum_10d"] == -2.5
+        assert first["sector"] == "Industrials" and first["pct_off_high"] == -12.0
+        assert first["rsi"] is None  # NaN was recorded as missing
+        assert "legacy_top20" not in first
+        # Not recorded for this row: blank, not an error.
+        assert body["results"][1]["support"] is None
+        assert body["results"][1]["rsi"] == 40.0
+    finally:
+        await db_session.execute(
+            delete(ScanPick).where(ScanPick.scan_id.in_([uuid.UUID(older), uuid.UUID(newer)]))
+        )
+        await db_session.commit()
+
+
 class _ResultScanner:
     client = None
 

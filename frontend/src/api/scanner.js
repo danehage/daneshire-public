@@ -27,6 +27,15 @@ export async function getScanResults(scanId) {
   return res.json();
 }
 
+// Most recent scan saved to scan_picks (#126). Resolves to null when no
+// scan has been saved yet (the route returns 404).
+export async function getLatestScan() {
+  const res = await fetch(`${API_BASE}/api/scan/latest`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+  return res.json();
+}
+
 export async function analyzeTicker(symbol) {
   const res = await fetch(`${API_BASE}/api/scan/ticker/${symbol}`);
   if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);

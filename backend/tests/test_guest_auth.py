@@ -10,7 +10,7 @@ leak owner data in its response body.
 """
 
 import base64
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -200,6 +200,33 @@ async def test_guest_cannot_start_a_scan(auth_client):
 async def test_guest_can_still_read_scan_metadata(auth_client):
     response = await auth_client.get("/api/scan/universes", headers=GUEST)
     assert response.status_code not in (401, 403)
+
+
+async def test_guest_can_read_the_latest_saved_scan(auth_client, monkeypatch):
+    """GET /api/scan/latest (#126) is a DB read of scanner output: it spends
+    nothing and holds no personal data, so guests are allowed (Dane,
+    2026-10-14)."""
+    from app.database import get_db
+    from app.routes import scanner as scanner_routes
+
+    async def saved_scan(session):
+        return {
+            "scan_id": "00000000-0000-0000-0000-000000000126",
+            "universe": "combined_screener",
+            "scanned_at": datetime(2026, 10, 13, 21, 0),
+            "results": [{"ticker": "AAA", "price": 12.5, "score": 70, "signals": []}],
+        }
+
+    async def no_db():
+        yield None
+
+    monkeypatch.setattr(scanner_routes, "load_latest_scan", saved_scan)
+    app.dependency_overrides[get_db] = no_db
+
+    response = await auth_client.get("/api/scan/latest", headers=GUEST)
+    assert response.status_code == 200
+    assert response.json()["saved"] is True
+    assert response.json()["results"][0]["ticker"] == "AAA"
 
 
 async def test_guest_universe_listing_never_calls_fmp(auth_client, monkeypatch, tmp_path):

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useUniverses, useScan } from "../hooks/useScanner";
+import { useUniverses, useScan, useLatestScan } from "../hooks/useScanner";
 import { useCreateWatchlistItem } from "../hooks/useWatchlist";
 import { useRole } from "../hooks/useMe";
 
@@ -142,6 +142,20 @@ function signedPct(v, digits = 1) {
 function trendRank(r) {
   if (r.dist_50 == null && r.dist_200 == null) return null;
   return (r.dist_50 > 0 ? 1 : 0) + (r.dist_200 > 0 ? 1 : 0);
+}
+
+// Saved scans (#126) may lack fields recorded only by later scans; show
+// those blank instead of crashing on null.toFixed.
+function num(v, digits, { prefix = "", suffix = "", scale = 1 } = {}) {
+  if (v == null) return "—";
+  return `${prefix}${(v / scale).toFixed(digits)}${suffix}`;
+}
+
+function formatScanDate(iso) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function formatCap(v) {
@@ -364,7 +378,7 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
           {formatCap(result.market_cap)}
         </td>
         <td className="py-3 px-3 text-sm font-mono text-mid-brown">
-          {result.score}
+          {result.score ?? "—"}
         </td>
         <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
           {onAddToWatchlist && (
@@ -387,20 +401,20 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
                   Price Levels
                 </h4>
                 <p>
-                  <span className="text-mid-brown">Support:</span> $
-                  {result.support.toFixed(2)}
+                  <span className="text-mid-brown">Support:</span>{" "}
+                  {num(result.support, 2, { prefix: "$" })}
                 </p>
                 <p>
-                  <span className="text-mid-brown">Resistance:</span> $
-                  {result.resistance.toFixed(2)}
+                  <span className="text-mid-brown">Resistance:</span>{" "}
+                  {num(result.resistance, 2, { prefix: "$" })}
                 </p>
                 <p>
                   <span className="text-mid-brown">52w Range:</span>{" "}
-                  {result.range_position.toFixed(0)}%
+                  {num(result.range_position, 0, { suffix: "%" })}
                 </p>
                 <p>
                   <span className="text-mid-brown">RSI:</span>{" "}
-                  {result.rsi.toFixed(0)}
+                  {num(result.rsi, 0)}
                 </p>
               </div>
               <div>
@@ -426,15 +440,15 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
                 </h4>
                 <p>
                   <span className="text-mid-brown">Volume:</span>{" "}
-                  {(result.volume / 1000000).toFixed(2)}M
+                  {num(result.volume, 2, { scale: 1e6, suffix: "M" })}
                 </p>
                 <p>
                   <span className="text-mid-brown">Avg Volume:</span>{" "}
-                  {(result.avg_volume / 1000000).toFixed(2)}M
+                  {num(result.avg_volume, 2, { scale: 1e6, suffix: "M" })}
                 </p>
                 <p>
                   <span className="text-mid-brown">Pace:</span>{" "}
-                  {result.volume_pace.toFixed(2)}x
+                  {num(result.volume_pace, 2, { suffix: "x" })}
                   {result.volume_pace_reliable && " ✓"}
                 </p>
               </div>
@@ -452,7 +466,7 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
                 </p>
                 <p>
                   <span className="text-mid-brown">10d Momentum:</span>{" "}
-                  {result.momentum_10d.toFixed(1)}%
+                  {num(result.momentum_10d, 1, { suffix: "%" })}
                 </p>
               </div>
             </div>
@@ -474,7 +488,7 @@ function ResultRow({ result, onAddToWatchlist, isAdding }) {
                 )}
               </div>
               <div className="flex flex-wrap mt-2">
-                {result.signals.map((signal, i) => (
+                {(result.signals ?? []).map((signal, i) => (
                   <SignalBadge key={i} signal={signal} />
                 ))}
               </div>
@@ -539,16 +553,23 @@ export default function ScannerPage() {
   const {
     startScan,
     isStarting,
+    scanId,
     progress,
     isScanning,
-    results,
+    results: liveResults,
     resultsLoading,
     error,
     reset,
   } = useScan();
+  const { data: latestScan } = useLatestScan();
 
   const addToWatchlist = useCreateWatchlistItem();
   const role = useRole();
+
+  // With no scan started in this session, open on the last saved scan
+  // (#126). A full scan takes ~16-40 min, so that's usually what to read.
+  const results = scanId ? liveResults : latestScan ?? null;
+  const isSaved = !!results?.saved;
 
   // ADR-0007 quality gate (#116): rows that failed are hidden by default.
   // null means the gate didn't run, so those rows stay visible.
@@ -580,7 +601,7 @@ export default function ScannerPage() {
       await addToWatchlist.mutateAsync({
         ticker: result.ticker,
         status: "watching",
-        tags: result.signals.slice(0, 3), // First 3 signals as tags
+        tags: (result.signals ?? []).slice(0, 3), // First 3 signals as tags
       });
     } finally {
       setAddingTicker(null);
@@ -672,6 +693,14 @@ export default function ScannerPage() {
           <div className="flex items-center justify-between">
             <h2 className="font-serif text-2xl text-ink">
               Results ({allRows.length - filteredOut.length} passed quality gate)
+              {isSaved && (
+                <span
+                  className="ml-3 align-middle inline-block px-2 py-1 text-xs font-medium uppercase tracking-wide bg-cream text-dark-brown border-2 border-ink"
+                  title={new Date(results.scanned_at).toLocaleString()}
+                >
+                  Scanned {formatScanDate(results.scanned_at)}
+                </span>
+              )}
               {results.partial && (
                 <span className="ml-3 align-middle inline-block px-2 py-1 text-xs font-medium uppercase tracking-wide bg-warning text-warm-white border-2 border-ink animate-pulse">
                   partial — scan running, rows still arriving
@@ -679,7 +708,9 @@ export default function ScannerPage() {
               )}
             </h2>
             <span className="text-sm text-mid-brown">
-              {results.partial
+              {isSaved
+                ? `Saved scan of ${results.universe}`
+                : results.partial
                 ? `${progress?.current ?? results.total_analyzed} of ${progress?.total ?? "?"} analyzed`
                 : `Scanned ${results.total_analyzed} stocks`}
               {results.errors > 0 && (
@@ -690,7 +721,14 @@ export default function ScannerPage() {
             </span>
           </div>
           <div className="flex items-center justify-between text-sm">
-            {gateRan ? (
+            {isSaved ? (
+              // Gate failures are never saved (#126), so there is nothing
+              // to toggle on.
+              <span className="text-mid-brown">
+                Saved scans keep only rows that passed the quality gate. Run
+                a new scan to see what it filtered out.
+              </span>
+            ) : gateRan ? (
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"

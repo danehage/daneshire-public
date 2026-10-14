@@ -122,6 +122,45 @@ class ScanResultsResponse(BaseModel):
     partial: bool = False  # True while the scan is still running (issue #53)
 
 
+class SavedScanResultItem(ScanResultItem):
+    """A row rebuilt from ``scan_picks`` (#126).
+
+    The forward record keeps a subset of each result (``_PAYLOAD_KEYS`` in
+    ``services/scan_history.py``), and rows recorded before a key was added
+    lack it, so everything but the ticker and price may be missing.
+    """
+
+    market_cap: Optional[int] = None
+    volume: Optional[int] = None
+    avg_volume: Optional[int] = None
+    volume_pace: Optional[float] = None
+    volume_pace_reliable: Optional[bool] = None
+    trend: Optional[str] = None
+    range_position: Optional[float] = None
+    high_52w: Optional[float] = None
+    low_52w: Optional[float] = None
+    support: Optional[float] = None
+    resistance: Optional[float] = None
+    support_type: Optional[str] = None
+    resistance_type: Optional[str] = None
+    volume_ratio: Optional[float] = None
+    rsi: Optional[float] = None
+    momentum_10d: Optional[float] = None
+    score: Optional[int] = None
+    signals: list[str] = []
+
+
+class SavedScanResultsResponse(ScanResultsResponse):
+    """The most recent scan recorded to ``scan_picks`` (#126).
+
+    Holds only the rows the scan showed: gate failures are never recorded.
+    ``universe`` is the recorded label (e.g. ``combined_screener``).
+    """
+
+    results: list[SavedScanResultItem]
+    saved: bool = True
+
+
 # For historical scan storage (future: database models)
 class ScanSnapshotCreate(BaseModel):
     """Create a scan snapshot record."""

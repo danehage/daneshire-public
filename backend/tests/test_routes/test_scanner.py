@@ -386,3 +386,43 @@ async def test_unknown_universe_is_400_without_calling_fmp(client, temp_universe
     res = await client.post("/api/scan/execute", json={"universe": "robinhood"})
     assert res.status_code == 400
     assert screener.calls == 0
+
+
+# --- GET /api/scan/latest (#126) --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_latest_is_404_before_any_scan_is_saved(client, monkeypatch):
+    async def nothing_saved(session):
+        return None
+
+    monkeypatch.setattr(scanner_routes, "load_latest_scan", nothing_saved)
+    res = await client.get("/api/scan/latest")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "No saved scan yet"}
+
+
+@pytest.mark.asyncio
+async def test_latest_is_not_shadowed_by_scan_id_routes(client, monkeypatch):
+    """``latest`` must reach its own route, not be read as a scan_id."""
+
+    async def one_row(session):
+        return {
+            "scan_id": "00000000-0000-0000-0000-000000000126",
+            "universe": "combined_screener",
+            "scanned_at": datetime(2026, 10, 13, 21, 0),
+            # A pre-#126 row: only the fields recorded back then.
+            "results": [{"ticker": "AAA", "price": 12.5, "score": 70, "signals": ["x"]}],
+        }
+
+    monkeypatch.setattr(scanner_routes, "load_latest_scan", one_row)
+    res = await client.get("/api/scan/latest")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["saved"] is True
+    assert body["universe"] == "combined_screener"
+    assert body["total_analyzed"] == 1
+    row = body["results"][0]
+    assert row["ticker"] == "AAA" and row["price"] == 12.5
+    # Fields the old record didn't keep come back blank, not as errors.
+    assert row["support"] is None and row["volume_pace"] is None

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.scan_history import ScanPick
@@ -38,6 +39,12 @@ _PAYLOAD_KEYS = (
     "pct_off_high", "sector", "last_earnings_date", "last_eps_actual",
     "last_eps_estimate", "eps_surprise_pct", "earnings_reaction_pct",
     "earnings_reaction_vs_spy",
+    # #126: the rest of what the results table's expanded row shows, so a
+    # saved scan renders like a live one. Rows recorded before #126 lack
+    # these; the page shows them blank.
+    "support", "resistance", "ma_slope", "volume", "avg_volume",
+    "volume_pace", "volume_pace_reliable", "current_hv", "momentum_10d",
+    "pct_above_low",
 )
 
 
@@ -101,3 +108,48 @@ async def record_scan_picks(
     session.add_all(rows)
     await session.commit()
     return len(rows)
+
+
+def _pick_to_result(pick: ScanPick) -> dict:
+    """Rebuild a results-table row from a recorded pick."""
+    payload = {k: v for k, v in (pick.payload or {}).items() if k != "legacy_top20"}
+    return {
+        **payload,
+        "ticker": pick.ticker,
+        "price": float(pick.price),
+        "score": int(pick.score) if pick.score is not None else None,
+        "setup": pick.setup,
+    }
+
+
+async def load_latest_scan(session: AsyncSession, ranker: str = "scanner") -> Optional[dict]:
+    """The most recent recorded scan, shaped for the scanner page (#126).
+
+    Returns ``None`` when nothing has been recorded. Rows come back in
+    rank order. Only shown rows were recorded (gate failures never are),
+    so a saved scan has no "filtered out" rows to offer.
+    """
+    latest = (
+        await session.execute(
+            select(ScanPick.scan_id, ScanPick.universe, ScanPick.scanned_at)
+            .where(ScanPick.ranker == ranker)
+            .order_by(ScanPick.scanned_at.desc(), ScanPick.created_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if latest is None:
+        return None
+
+    picks = (
+        await session.execute(
+            select(ScanPick)
+            .where(ScanPick.scan_id == latest.scan_id, ScanPick.ranker == ranker)
+            .order_by(ScanPick.rank)
+        )
+    ).scalars().all()
+    return {
+        "scan_id": str(latest.scan_id),
+        "universe": latest.universe,
+        "scanned_at": latest.scanned_at,
+        "results": [_pick_to_result(p) for p in picks],
+    }

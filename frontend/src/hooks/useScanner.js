@@ -4,6 +4,7 @@ import {
   getUniverses,
   executeScan,
   getScanResults,
+  getLatestScan,
   analyzeTicker,
   createScanStream,
 } from "../api/scanner";
@@ -13,6 +14,18 @@ export function useUniverses() {
     queryKey: ["universes"],
     queryFn: getUniverses,
     staleTime: 1000 * 60 * 60, // 1 hour - universes don't change often
+  });
+}
+
+// The last scan saved to the database (#126): what the page shows when no
+// scan has been run in this session. data is null when none is saved yet.
+export function useLatestScan() {
+  return useQuery({
+    queryKey: ["scanLatest"],
+    queryFn: getLatestScan,
+    // Short: a scan finishing in another tab or session should show up.
+    staleTime: 1000 * 30,
+    retry: false,
   });
 }
 
@@ -70,6 +83,8 @@ export function useScan() {
           setIsScanning(false);
           // Invalidate to fetch results
           queryClient.invalidateQueries({ queryKey: ["scanResults", scanId] });
+          // The finished scan is now the latest saved one.
+          queryClient.invalidateQueries({ queryKey: ["scanLatest"] });
           eventSource.close();
         } else if (data.type === "error") {
           setError(data.error);

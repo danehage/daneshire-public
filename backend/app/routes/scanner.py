@@ -10,19 +10,22 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.scan import (
     ScanRequest,
     ScanExecuteResponse,
     ScanResultItem,
     ScanResultsResponse,
+    SavedScanResultItem,
+    SavedScanResultsResponse,
     UniverseInfo,
 )
-from app.database import get_session_factory
+from app.database import get_db, get_session_factory
 from app.schemas.tickers import normalize_ticker
 from app.services.fundamentals import ScanQualityGate
 from app.services.market import MarketData, TickerNotFound, get_market
-from app.services.scan_history import record_scan_picks
+from app.services.scan_history import load_latest_scan, record_scan_picks
 from app.services.screener_universe import (
     SOURCE_STALE_CACHE,
     SOURCE_STATIC_FALLBACK,
@@ -115,6 +118,27 @@ async def list_universes():
         )
         for name in STATIC_UNIVERSES
     ]
+
+
+@router.get("/latest", response_model=SavedScanResultsResponse)
+async def get_latest_saved_scan(db: AsyncSession = Depends(get_db)):
+    """The most recent completed scan, read back from ``scan_picks`` (#126).
+
+    The in-memory scan store ages out within the hour and is lost on
+    scale-to-zero; this lets the page open on last week's scan. A DB read
+    only, so guests may reach it. Registered ahead of the ``/{scan_id}/...``
+    routes so a future single-segment ``/{scan_id}`` route can't shadow it.
+    """
+    latest = await load_latest_scan(db)
+    if latest is None:
+        raise HTTPException(status_code=404, detail="No saved scan yet")
+    return SavedScanResultsResponse(
+        scan_id=latest["scan_id"],
+        universe=latest["universe"],
+        total_analyzed=len(latest["results"]),
+        results=[SavedScanResultItem(**r) for r in latest["results"]],
+        scanned_at=latest["scanned_at"],
+    )
 
 
 @router.post("/execute", response_model=ScanExecuteResponse)
