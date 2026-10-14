@@ -303,6 +303,7 @@ class MarketData:
         iv_ttl: float = IV_TTL_SECONDS,
         realized_move_ttl: float = REALIZED_MOVE_TTL_SECONDS,
         context_ttl: float = CONTEXT_TTL_SECONDS,
+        etf_ttl: float = CONTEXT_TTL_SECONDS,
         clock=time.monotonic,
     ):
         self.client = client
@@ -344,6 +345,12 @@ class MarketData:
         # guest-reachable via /api/ticker/{s}/context, so cap tighter.
         self._context_cache: _TTLSingleflightCache[dict] = _TTLSingleflightCache(
             context_ttl, clock=clock, maxsize=200
+        )
+        # One bool per ticker from the profile's ``isEtf`` flag. The hourly
+        # plateau check asks for every holding, and a fund doesn't stop being
+        # a fund intraday, so 24h.
+        self._etf_cache: _TTLSingleflightCache[bool] = _TTLSingleflightCache(
+            etf_ttl, clock=clock, maxsize=500
         )
 
     # -- quotes -------------------------------------------------------------
@@ -644,6 +651,29 @@ class MarketData:
             compute_realized_move(bars, report_date, report_time)
             for report_date, report_time in events
         ]
+
+    # -- ETF flag -------------------------------------------------------------
+
+    async def is_etf(self, ticker: str) -> bool:
+        """Whether FMP's company profile flags ``ticker`` as an ETF.
+
+        Cached for 24h per ticker. Raises :class:`UpstreamError` when the
+        profile request fails and :class:`TickerNotFound` when FMP has no
+        profile, so callers can tell "not an ETF" from "don't know".
+        """
+        symbol = ticker.upper()
+        return await self._etf_cache.get_or_fetch(
+            ("etf", symbol), lambda: self._fetch_is_etf(symbol)
+        )
+
+    async def _fetch_is_etf(self, ticker: str) -> bool:
+        try:
+            profile = await self.client.get_company_profile(ticker)
+        except Exception as exc:  # noqa: BLE001 — FMPRequestError, network
+            raise UpstreamError(ticker, str(exc)) from exc
+        if not isinstance(profile, dict) or not profile:
+            raise TickerNotFound(ticker, f"No profile data for {ticker}")
+        return bool(profile.get("isEtf"))
 
     # -- ticker context (fundamentals + news) -------------------------------
 

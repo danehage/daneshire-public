@@ -30,6 +30,34 @@ export function useUpdateWatchlistItem() {
   });
 }
 
+// Set a holding's open date (#137): the plateau check anchors each run on
+// the `owned` watchlist row's entry_date. `item` is the ticker's active
+// watchlist row, if any. A non-owned active row is promoted to owned (the
+// create route would 409 on it); with no row, an owned row is created.
+export function useSetHoldingOpenDate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ticker, item, entryDate }) => {
+      if (item) {
+        const data = { entry_date: entryDate };
+        if (item.status !== "owned") data.status = "owned";
+        return updateWatchlistItem(item.id, data);
+      }
+      const created = await createWatchlistItem({
+        ticker,
+        status: "owned",
+        entry_date: entryDate,
+      });
+      // null = 409: a row appeared since the list loaded. Refetch and retry.
+      if (created === null) {
+        throw new Error(`${ticker} changed on the watchlist, try again`);
+      }
+      return created;
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["watchlist"] }),
+  });
+}
+
 export function useDeleteWatchlistItem() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -3,7 +3,8 @@
 Grades every equity holding across all accounts, logs each grade to
 ``holding_grade_history`` and fires Pushover when a grade worsens, plus one
 daily refresher while a holding stays deteriorated. Recovery to Running is
-silent.
+silent. ETFs are skipped (issue #137): run-topping sell alerts don't apply to
+index or income funds.
 
 ``POST /api/internal/portfolio/run-plateau-checks`` is a thin wrapper around
 :func:`run_plateau_checks`. :func:`grade_bars` is the windowing + grading
@@ -13,6 +14,7 @@ runs instead of a copy of it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -54,6 +56,22 @@ class PlateauGrade:
     stop_suggestion: Optional[str]
     current_price: float
     metrics: dict
+
+
+async def _etf_flag(market: MarketData, ticker: str) -> bool:
+    """True when FMP's profile flags ``ticker`` as an ETF.
+
+    A failed or empty profile lookup returns False so the ticker is graded
+    as before: a missed ETF costs one stray alert, a wrongly skipped stock
+    costs a missed sell signal.
+    """
+    try:
+        return await market.is_etf(ticker)
+    except MarketDataError as exc:
+        logger.warning(
+            "plateau-check: ETF lookup failed for %s (%s) — grading it", ticker, exc
+        )
+        return False
 
 
 def grade_bars(
@@ -146,6 +164,22 @@ async def run_plateau_checks(
                 )
 
     if not ticker_open_dates:
+        return RunSummary(alert_type="plateau_grade")
+
+    # Skip ETFs: not graded, logged, notified or warned about.
+    candidates = list(ticker_open_dates.keys())
+    etf_flags = await asyncio.gather(*(_etf_flag(market, t) for t in candidates))
+    etfs = sorted(t for t, is_etf in zip(candidates, etf_flags) if is_etf)
+    for t in etfs:
+        del ticker_open_dates[t]
+        del ticker_entry_price[t]
+    if etfs:
+        logger.info("plateau-check: skipping ETFs %s", ", ".join(etfs))
+    if not ticker_open_dates:
+        logger.info(
+            "plateau-checks: met=0 fired=0 not_met=0 errored=0 skipped_etf=%d",
+            len(etfs),
+        )
         return RunSummary(alert_type="plateau_grade")
 
     # Resolve open_date from watchlist items (entry_date field).
@@ -262,8 +296,8 @@ async def run_plateau_checks(
         await pushover.close()
 
     logger.info(
-        "plateau-checks: met=%d fired=%d not_met=%d errored=%d",
-        met, fired, not_met, errored,
+        "plateau-checks: met=%d fired=%d not_met=%d errored=%d skipped_etf=%d",
+        met, fired, not_met, errored, len(etfs),
     )
     return RunSummary(
         alert_type="plateau_grade",

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAccounts, usePortfolio, useCommitSnapshot, useCommitTrade, useTrades, useValueHistory } from "../hooks/usePortfolio";
 import { useTradeCampaigns } from "../hooks/useTradeCampaigns";
+import { useWatchlist, useSetHoldingOpenDate } from "../hooks/useWatchlist";
 import { useShareMode, MASKED_MONEY, MASKED_QTY } from "../hooks/useShareMode";
 import PortfolioHeroCard from "../components/portfolio/PortfolioHeroCard";
 import ValueHistoryChart from "../components/portfolio/ValueHistoryChart";
@@ -66,7 +67,88 @@ function GradeBadge({ grade, stop, hvNow, atrPct }) {
   );
 }
 
-function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} }) {
+// Statuses the watchlist create route treats as "already on the list".
+const ACTIVE_WATCHLIST_STATUSES = ["owned", "watching", "position_open"];
+
+// Ticker → the active watchlist row the open date lives on, preferring
+// `owned` (the only status the plateau check reads). Matched by upper-cased
+// ticker, the same way services/plateau.py does.
+function watchlistRowsByTicker(items) {
+  const byTicker = {};
+  for (const item of items ?? []) {
+    if (!ACTIVE_WATCHLIST_STATUSES.includes(item.status)) continue;
+    const t = item.ticker.toUpperCase();
+    const current = byTicker[t];
+    if (!current || (current.status !== "owned" && item.status === "owned")) {
+      byTicker[t] = item;
+    }
+  }
+  return byTicker;
+}
+
+// Editable open date for one equity holding. Saves on blur or Enter, not on
+// every change: a date input reports partial years (0002-…) while typing.
+function OpenedDateCell({ ticker, item, loading }) {
+  const setOpenDate = useSetHoldingOpenDate();
+  const saved = item?.entry_date ?? "";
+  const [draft, setDraft] = useState(saved);
+  const [lastSaved, setLastSaved] = useState(saved);
+  // Follow the server value when it changes underneath (refetch, other row).
+  if (saved !== lastSaved) {
+    setLastSaved(saved);
+    setDraft(saved);
+  }
+
+  if (loading) return <span className="text-mid-brown">…</span>;
+
+  const save = () => {
+    if (draft === saved || setOpenDate.isPending) return;
+    if (!draft && !item) return;
+    setOpenDate.mutate({ ticker, item, entryDate: draft || null });
+  };
+  const missing = !saved;
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <input
+        type="date"
+        value={draft}
+        max={new Date().toLocaleDateString("en-CA")}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        disabled={setOpenDate.isPending}
+        title={
+          missing
+            ? "No open date: the plateau grade falls back to the trailing 126 bars"
+            : "Date this position was opened"
+        }
+        aria-label={`${ticker} open date`}
+        className={`px-1 py-0.5 border text-xs font-mono disabled:opacity-50 ${
+          missing ? "border-amber-500 bg-amber-50 text-amber-800" : "border-ink/30 bg-warm-white"
+        }`}
+      />
+      {missing && !setOpenDate.isPending && (
+        <span className="text-xs text-amber-800 font-mono leading-tight">no date</span>
+      )}
+      {setOpenDate.isError && (
+        <span className="text-xs text-red-600 font-mono leading-tight">
+          {setOpenDate.error.message}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function HoldingsTable({
+  positions,
+  showAccount = false,
+  campaignsByTicker = {},
+  watchlistByTicker = {},
+  watchlistLoading = false,
+}) {
   const { shareMode } = useShareMode();
   if (positions.length === 0) {
     return (
@@ -89,6 +171,7 @@ function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} 
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Mkt Value</th>
           <th className="text-right py-2 px-3 font-bold uppercase text-xs tracking-wide">Day Chg</th>
           <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Type</th>
+          <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Opened</th>
           <th className="text-left py-2 px-3 font-bold uppercase text-xs tracking-wide">Grade</th>
         </tr>
       </thead>
@@ -158,6 +241,16 @@ function HoldingsTable({ positions, showAccount = false, campaignsByTicker = {} 
               </td>
               <td className="py-2 px-3">
                 <HoldingsBadge type={pos.instrument_type} />
+              </td>
+              <td className="py-2 px-3">
+                {pos.instrument_type === "equity" && (
+                  <OpenedDateCell
+                    key={pos.ticker}
+                    ticker={pos.ticker.toUpperCase()}
+                    item={watchlistByTicker[pos.ticker.toUpperCase()]}
+                    loading={watchlistLoading}
+                  />
+                )}
               </td>
               <td className="py-2 px-3">
                 {pos.instrument_type === "equity" && (
@@ -572,6 +665,18 @@ export default function PortfolioPage() {
       campaignsByTicker[c.ticker] = c.id;
     }
   }
+  const { data: watchlist, isLoading: watchlistLoading } = useWatchlist();
+  const watchlistByTicker = watchlistRowsByTicker(watchlist);
+  const undatedTickers = watchlistLoading
+    ? []
+    : [
+        ...new Set(
+          positions
+            .filter((p) => p.instrument_type === "equity")
+            .map((p) => p.ticker.toUpperCase())
+            .filter((t) => !watchlistByTicker[t]?.entry_date)
+        ),
+      ];
 
   return (
     <div>
@@ -639,7 +744,22 @@ export default function PortfolioPage() {
         ) : error ? (
           <div className="p-8 text-center text-red-600 font-mono text-sm">{error.message}</div>
         ) : (
-          <HoldingsTable positions={positions} showAccount={!selectedAccountId} campaignsByTicker={campaignsByTicker} />
+          <>
+            {undatedTickers.length > 0 && (
+              <div className="px-4 py-2 border-b border-amber-400 bg-amber-50 text-amber-800 text-xs font-mono">
+                {undatedTickers.length} equity holding{undatedTickers.length === 1 ? "" : "s"} without
+                an open date ({undatedTickers.join(", ")}). Their plateau grade falls back to the
+                trailing 126 bars. ETFs are not graded, so they don't need one.
+              </div>
+            )}
+            <HoldingsTable
+              positions={positions}
+              showAccount={!selectedAccountId}
+              campaignsByTicker={campaignsByTicker}
+              watchlistByTicker={watchlistByTicker}
+              watchlistLoading={watchlistLoading}
+            />
+          </>
         )}
       </div>
 

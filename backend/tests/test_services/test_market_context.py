@@ -154,3 +154,48 @@ async def test_fetch_ticker_context_survives_partial_failures():
     assert ctx["quarterly_financials"] == []
     assert ctx["headlines"] == []
     assert ctx["next_earnings_date"] is None
+
+
+# -- is_etf (#137) ------------------------------------------------------------
+
+
+class _ProfileCounter(_FakeFMP):
+    def __init__(self, profile):
+        self.profile = profile
+        self.calls = 0
+
+    async def get_company_profile(self, ticker: str):
+        self.calls += 1
+        return self.profile
+
+
+@pytest.mark.asyncio
+async def test_is_etf_reads_profile_flag_and_caches():
+    etf = _ProfileCounter({"symbol": "QQQ", "isEtf": True})
+    market = _market(etf)
+    assert await market.is_etf("qqq") is True
+    assert await market.is_etf("QQQ") is True
+    assert etf.calls == 1
+
+    stock = _ProfileCounter({"symbol": "ADBE", "isEtf": False})
+    assert await _market(stock).is_etf("ADBE") is False
+
+
+@pytest.mark.asyncio
+async def test_is_etf_failures_raise_and_are_not_cached():
+    class _ProfileDown(_FakeFMP):
+        calls = 0
+
+        async def get_company_profile(self, ticker: str):
+            self.calls += 1
+            raise FMPRequestError(RequestFailure(500, "boom"), "/stable/profile")
+
+    down = _ProfileDown()
+    market = _market(down)
+    for _ in range(2):
+        with pytest.raises(UpstreamError):
+            await market.is_etf("QQQ")
+    assert down.calls == 2
+
+    with pytest.raises(TickerNotFound):
+        await _market(_ProfileCounter(None)).is_etf("ZZZZ")
