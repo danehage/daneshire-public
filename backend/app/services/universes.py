@@ -1,6 +1,11 @@
 """
-Stock Universe Definitions
-Curated lists of tickers for different scanning strategies
+Static stock universes.
+
+The default ``combined`` scan is built from FMP's company screener since
+#118 (``app.services.screener_universe``). These hand-maintained lists stay:
+``sp500`` / ``sp400`` / ``sp500_sample`` are still selectable, and the
+S&P 500 + 400 union is the fallback when the screener is unavailable (and
+the backtest's ``current900`` replay).
 """
 
 # S&P 500 Sample - 100 representative large caps
@@ -132,17 +137,30 @@ def get_combined_universe() -> list[str]:
     return sorted(list(combined))
 
 
-# Universe name -> ticker list mapping. "combined" is the default scan:
-# Dane wants the complete picture, not a subset (2026-07-08, issue #48).
-UNIVERSES = {
+# Universe name -> fixed ticker list. "combined" is the default scan (Dane
+# wants the complete picture, 2026-07-08, #48), but since #118 the scan
+# route resolves it from the screener; the entry here is the static
+# S&P 500 + 400 fallback. Use ``screener_universe.resolve_universe`` to get
+# what a scan of a name would actually cover.
+STATIC_UNIVERSES = {
     "combined": get_combined_universe(),
     "sp500": SP500_FULL,
     "sp400": SP400_FULL,
     "sp500_sample": SP500_SAMPLE,
 }
+UNIVERSES = STATIC_UNIVERSES
+
+UNIVERSE_DESCRIPTIONS = {
+    # The page adds that the quality gate's backtest covered the S&P 500 only.
+    "combined": "US-listed companies ≥ $2B, liquid — FMP screener, rebuilt weekly",
+    "sp500": "Full S&P 500 constituents, static list (~500 stocks)",
+    "sp400": "S&P MidCap 400 — quality mid-caps, static list (~400 stocks)",
+    "sp500_sample": "100 representative large cap S&P 500 stocks",
+}
 
 
 def get_universe(name: str) -> list[str]:
-    """Get ticker list by universe name; empty list for unknown names
-    (the scan route turns that into a 400)."""
-    return UNIVERSES.get(name, [])
+    """Static ticker list by universe name; empty list for unknown names.
+    For ``combined`` this is the S&P 500 + 400 fallback, not the screener
+    build."""
+    return STATIC_UNIVERSES.get(name, [])

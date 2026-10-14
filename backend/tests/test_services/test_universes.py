@@ -44,6 +44,12 @@ def test_combined_is_a_scannable_universe():
     assert UNIVERSES["combined"] == get_combined_universe()
 
 
+def test_every_universe_is_described():
+    from app.services.universes import UNIVERSE_DESCRIPTIONS
+
+    assert set(UNIVERSE_DESCRIPTIONS) == set(UNIVERSES)
+
+
 def test_unknown_universe_returns_empty():
     # The scan route relies on this to 400 unknown names instead of
     # silently scanning a fallback list.

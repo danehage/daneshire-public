@@ -16,10 +16,18 @@ function UniverseSelector({ value, onChange, universes }) {
       >
         {universes?.map((u) => (
           <option key={u.name} value={u.name}>
-            {u.name.toUpperCase()} ({u.size} stocks) — {u.description}
+            {`${u.name.toUpperCase()} (${
+              u.size == null ? "size set at scan" : `${u.size} stocks`
+            }) — ${u.description}`}
           </option>
         ))}
       </select>
+      {value === "combined" && (
+        <p className="text-xs text-mid-brown">
+          The quality gate&apos;s backtest evidence covers the S&amp;P 500
+          only; across the wider universe it is a filter, not a tested edge.
+        </p>
+      )}
     </div>
   );
 }

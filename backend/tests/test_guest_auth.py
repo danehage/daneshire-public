@@ -202,6 +202,30 @@ async def test_guest_can_still_read_scan_metadata(auth_client):
     assert response.status_code not in (401, 403)
 
 
+async def test_guest_universe_listing_never_calls_fmp(auth_client, monkeypatch, tmp_path):
+    """Since #118 ``combined`` is built from FMP's screener. Listing must
+    only peek at the cached build: the guest-visible route can't be a way
+    to trigger paid calls."""
+    from app.routes import scanner as scanner_routes
+    from app.services import screener_universe
+    from app.services.screener_universe import UniverseCache
+
+    monkeypatch.setattr(
+        scanner_routes, "universe_cache", UniverseCache(str(tmp_path / "universe.json"))
+    )
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("universe listing must not resolve via FMP")
+
+    monkeypatch.setattr(screener_universe, "resolve_universe", boom)
+    monkeypatch.setattr(scanner_routes, "resolve_universe", boom)
+
+    response = await auth_client.get("/api/scan/universes", headers=GUEST)
+    assert response.status_code == 200
+    combined = next(u for u in response.json() if u["name"] == "combined")
+    assert combined["size"] is None  # no build on this instance yet
+
+
 # --- Gemini narrative is owner-only (paid call per new ticker/day) ---------
 
 

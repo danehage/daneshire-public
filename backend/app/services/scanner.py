@@ -4,6 +4,7 @@ Main scanning logic with parallel processing
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -79,6 +80,14 @@ def eps_surprise_pct(actual: Optional[float], estimate: Optional[float]) -> Opti
     if actual is None or estimate is None or estimate == 0:
         return None
     return round((actual - estimate) / abs(estimate) * 100, 1)
+
+
+def universe_digest(tickers) -> str:
+    """Short fingerprint of a ticker list. Stored with the Stage-1 cache so
+    a survivor list is only reused for the exact universe it was cut from:
+    ``combined`` is a screener build since #118 and can change between
+    scans on the same day (weekly rebuild, or the static fallback)."""
+    return hashlib.sha1(",".join(sorted(tickers)).encode()).hexdigest()[:12]
 
 
 def _passes_stage1(quote: dict) -> bool:
@@ -175,7 +184,12 @@ class StockScanner:
         Returns comprehensive metrics dict or None if insufficient data.
         """
         try:
-            hist_data = await self.client.get_historical_data(ticker, days=252)
+            # Read-only on the history cache: one scan touches every
+            # survivor once, and keeping each full series on Cloud Run's
+            # in-memory disk would outgrow the instance (#118).
+            hist_data = await self.client.get_historical_data(
+                ticker, days=252, save_cache=False
+            )
 
             if hist_data is None or len(hist_data) < 20:
                 return None
@@ -479,9 +493,18 @@ class StockScanner:
         # quotes for just the survivors -- one bulk call over the survivor
         # set instead of the whole universe.
         survivors: dict[str, dict] = {}
+        digest = universe_digest(tickers)
 
         if use_cache:
             cache_data = self._load_cache(cache_key)
+            if cache_data and cache_data.get("universe_digest") != digest:
+                # Cut from a different ticker list under the same name (or
+                # written before the digest existed): don't reuse it.
+                logger.info(
+                    f"Stage 1 cache for {universe} is from a different ticker "
+                    "list; refetching the whole universe"
+                )
+                cache_data = None
             if cache_data:
                 cached_tickers = self._cached_survivor_tickers(cache_data)
                 if cached_tickers:
@@ -511,7 +534,9 @@ class StockScanner:
             # of the day.
             coverage = len(all_quotes) / len(tickers) if tickers else 0.0
             if coverage >= 0.9:
-                self._save_cache(cache_key, {"tickers": sorted(survivors)})
+                self._save_cache(
+                    cache_key, {"tickers": sorted(survivors), "universe_digest": digest}
+                )
             else:
                 logger.warning(
                     f"Quote coverage only {coverage:.0%} of universe; "

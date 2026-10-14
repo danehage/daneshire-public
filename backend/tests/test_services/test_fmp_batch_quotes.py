@@ -134,7 +134,7 @@ class FakeFMPForScanner:
     async def get_batch_quotes(self, tickers, max_concurrent=10):
         return {t: quote_for(t) for t in tickers if t in self.answered}
 
-    async def get_historical_data(self, ticker, days=252, use_cache=True):
+    async def get_historical_data(self, ticker, days=252, use_cache=True, save_cache=True):
         return None
 
     async def get_earnings_info(self, ticker):

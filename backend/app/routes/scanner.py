@@ -20,10 +20,17 @@ from app.schemas.scan import (
 )
 from app.database import get_session_factory
 from app.schemas.tickers import normalize_ticker
-from app.services import UNIVERSES, get_universe
 from app.services.fundamentals import ScanQualityGate
 from app.services.market import MarketData, TickerNotFound, get_market
 from app.services.scan_history import record_scan_picks
+from app.services.screener_universe import (
+    SOURCE_STALE_CACHE,
+    SOURCE_STATIC_FALLBACK,
+    UniverseCache,
+    peek_universe_size,
+    resolve_universe,
+)
+from app.services.universes import STATIC_UNIVERSES, UNIVERSE_DESCRIPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,10 @@ _MAX_RETAINED_SCANS = 10
 # A scan holds a CPU-always-allocated worker for minutes and fans out to a
 # paid upstream API. One at a time, per instance.
 _MAX_CONCURRENT_SCANS = 1
+
+# The weekly screener build behind ``combined`` (#118). Module-level so
+# tests can point it at a temp file.
+universe_cache = UniverseCache()
 
 
 def _running_scan_count() -> int:
@@ -90,21 +101,19 @@ def _prune_scans() -> None:
 
 @router.get("/universes", response_model=list[UniverseInfo])
 async def list_universes():
-    """List available stock universes with their sizes."""
-    descriptions = {
-        "combined": "S&P 500 + S&P 400 — the complete picture (~900 stocks)",
-        "sp500": "Full S&P 500 constituents (~500 stocks)",
-        "sp400": "S&P MidCap 400 — quality mid-caps (~400 stocks)",
-        "sp500_sample": "100 representative large cap S&P 500 stocks",
-    }
+    """List available stock universes with their sizes.
 
+    Never calls FMP (guests can reach this): ``combined`` reports the size
+    of this instance's cached screener build, or null before the first
+    scan builds one.
+    """
     return [
         UniverseInfo(
             name=name,
-            size=len(tickers),
-            description=descriptions.get(name, ""),
+            size=peek_universe_size(name, universe_cache),
+            description=UNIVERSE_DESCRIPTIONS.get(name, ""),
         )
-        for name, tickers in UNIVERSES.items()
+        for name in STATIC_UNIVERSES
     ]
 
 
@@ -123,9 +132,22 @@ async def execute_scan(
     request timeout). Requires CPU-always-allocated on Cloud Run so the task
     keeps making progress after this request returns (see cloudbuild.yaml).
     """
-    tickers = get_universe(request.universe)
-    if not tickers:
+    if request.universe not in STATIC_UNIVERSES:
         raise HTTPException(status_code=400, detail=f"Unknown universe: {request.universe}")
+
+    # Delegate to the shared scanner so the FMP throttle is process-wide.
+    scanner = market.scanner
+
+    # ``combined`` is the weekly screener build (#118); it falls back to
+    # the static S&P 500 + 400 when FMP's screener is unavailable. Resolved
+    # before the concurrency check: nothing may await between that check
+    # and registering the scan below, or two clicks could both start one.
+    resolved = await resolve_universe(
+        request.universe, getattr(scanner, "client", None), universe_cache
+    )
+    if resolved is None or not resolved.tickers:
+        raise HTTPException(status_code=400, detail=f"Unknown universe: {request.universe}")
+    tickers = resolved.tickers
 
     _prune_scans()
 
@@ -137,9 +159,6 @@ async def execute_scan(
                 "starting another."
             ),
         )
-
-    # Delegate to the shared scanner so the FMP throttle is process-wide.
-    scanner = market.scanner
 
     # Generate scan_id upfront
     import uuid
@@ -155,6 +174,7 @@ async def execute_scan(
         "status": "running",
         "universe": request.universe,
         "universe_size": len(tickers),
+        "universe_source": resolved.source,
         "started_at": datetime.utcnow(),
         "progress": {"current": 0, "total": 0, "found": 0, "errors": 0},
         "results": live_results,
@@ -184,7 +204,9 @@ async def execute_scan(
                 tickers,
                 progress_callback=progress_callback,
                 use_cache=request.use_cache,
-                universe=request.universe,
+                # Label, not name: keeps the Stage-1 cache of a screener
+                # build apart from the static fallback's.
+                universe=resolved.label,
                 results_out=live_results,
                 quality_gate=ScanQualityGate(session_factory, scanner.client),
             )
@@ -201,7 +223,7 @@ async def execute_scan(
         # a finished scan into an error.
         try:
             async with session_factory() as session:
-                await record_scan_picks(session, temp_scan_id, request.universe, results)
+                await record_scan_picks(session, temp_scan_id, resolved.label, results)
         except Exception as e:
             logger.warning(f"Scan {temp_scan_id}: could not record picks: {e}")
 
@@ -211,11 +233,20 @@ async def execute_scan(
     _scan_tasks.add(task)
     task.add_done_callback(_scan_tasks.discard)
 
+    message = f"Scan started across {len(tickers)} tickers."
+    if resolved.source == SOURCE_STATIC_FALLBACK:
+        message += " FMP's screener was unavailable; scanning the static S&P 500 + 400."
+    elif resolved.source == SOURCE_STALE_CACHE:
+        message += (
+            " FMP's screener was unavailable; using the universe built "
+            f"{resolved.fetched_at:%Y-%m-%d}."
+        )
     return ScanExecuteResponse(
         scan_id=temp_scan_id,
         universe=request.universe,
         universe_size=len(tickers),
-        message=f"Scan started across {len(tickers)} tickers.",
+        universe_source=resolved.source,
+        message=message,
     )
 
 

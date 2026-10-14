@@ -258,8 +258,9 @@ CREATE INDEX idx_alert_history_triggered ON alert_history(condition_met)
 ### Scanner
 
 ```
-GET  /api/scan/universes          → list available universes + sizes
-POST /api/scan/execute             → start scan (returns scan_id, streams progress via SSE)
+GET  /api/scan/universes          → list available universes + sizes (never calls FMP;
+                                     `combined` size is null until this instance builds it)
+POST /api/scan/execute             → start scan (returns scan_id + universe_source, streams progress via SSE)
 GET  /api/scan/{scan_id}/stream    → SSE endpoint for scan progress
 GET  /api/scan/{scan_id}/results   → get completed scan results
 GET  /api/scan/history             → list past scans with date/universe/count
@@ -369,7 +370,7 @@ Secure these with a shared secret header (`X-Scheduler-Secret`) so they can't be
 - "Add to watchlist" floating action
 
 ### Scanner
-- Universe selector, filters, execute button
+- Universe selector, filters, execute button. Default universe `combined` = FMP company screener, US-listed ≥ $2B, liquid, rebuilt weekly (#118; rules in CONTEXT.md § Scan universe), with the static S&P 500 + 400 as fallback; the page notes that the quality gate's backtest evidence covers the S&P 500 only
 - Results table with "Add to watchlist" button per row. Sortable fact columns (#117): % off 52w high, earnings reaction vs SPY, last EPS beat/miss, trend vs 50/200-day MA, HV Rank, days to next report, sector, market cap, plus the legacy score until ~2027-01-10. Quality-gate failures hidden by default (#116)
 - Historical scans dropdown
 

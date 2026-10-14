@@ -72,7 +72,7 @@ class FakeFMP:
         self.hist_calls: list[str] = []
         self.report = self.stock[-30]["date"]
 
-    async def get_historical_data(self, ticker, days=252, use_cache=True):
+    async def get_historical_data(self, ticker, days=252, use_cache=True, save_cache=True):
         self.hist_calls.append(ticker)
         return self.spy if ticker == "SPY" else self.stock
 

@@ -409,7 +409,11 @@ class FMPClient:
         return all_quotes
 
     async def get_historical_data(
-        self, ticker: str, days: int = 252, use_cache: bool = True
+        self,
+        ticker: str,
+        days: int = 252,
+        use_cache: bool = True,
+        save_cache: bool = True,
     ) -> Optional[list[dict]]:
         """
         Fetch historical price data for a ticker.
@@ -423,6 +427,11 @@ class FMPClient:
         so callers asking for different windows (252 / 700 / 1500) all get
         a correct slice from the same file. A ticker with less history than
         ``days`` simply returns everything there is.
+
+        ``save_cache=False`` still reads an existing file but doesn't write
+        one. The scanner uses it: a scan reads each history once, and on
+        Cloud Run the cache directory lives in instance memory, so keeping
+        ~1,400 full series (~230 KB each) for the day risks the 512Mi limit.
         """
         # Check cache first
         if use_cache:
@@ -447,7 +456,8 @@ class FMPClient:
                         hist = list(reversed(data["historical"]))
 
                     if hist:
-                        self._save_hist_cache(ticker, hist)
+                        if save_cache:
+                            self._save_hist_cache(ticker, hist)
                         return hist[-days:]
 
                 return None
@@ -500,6 +510,32 @@ class FMPClient:
         except httpx.RequestError as e:
             logger.error(f"Error fetching S&P 500 constituents: {e}")
             return []
+
+    async def get_company_screener(self, params: dict) -> list[dict]:
+        """Rows from /stable/company-screener for ``params`` (#118).
+
+        One throttled request; the US >= $2B query returns ~1,700 rows
+        (~1 MB), hence the longer timeout. Raises :class:`FMPRequestError`
+        on failure so the universe resolver can fall back and say why.
+        """
+        query = "&".join(f"{k}={urlquote(str(v), safe='')}" for k, v in params.items())
+        url = f"{self.BASE_URL}/stable/company-screener?{query}&apikey={self.api_key}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await self._request_with_retry(url, client)
+            failure = self.last_failure
+        if response is None:
+            raise FMPRequestError(
+                failure or RequestFailure(None, "no response"), "/stable/company-screener"
+            )
+        try:
+            data = response.json()
+        except ValueError:
+            raise FMPRequestError(RequestFailure(200, "non-JSON body"), "/stable/company-screener")
+        if not isinstance(data, list):
+            raise FMPRequestError(
+                RequestFailure(200, "unexpected payload shape"), "/stable/company-screener"
+            )
+        return [row for row in data if isinstance(row, dict)]
 
     async def get_company_profile(self, ticker: str) -> Optional[dict]:
         """Fetch company profile: name, sector, description, 52w range.

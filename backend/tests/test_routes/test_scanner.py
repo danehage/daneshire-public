@@ -258,3 +258,131 @@ def test_prune_never_drops_a_running_scan():
 
     assert "running" in scanner_routes._active_scans
     scanner_routes._active_scans.clear()
+
+
+# --- Screener-built ``combined`` universe (#118) ---------------------------
+
+
+class _RecordingScanner(_FakeScanner):
+    """Records what run_scan was asked to scan; ``client`` serves the
+    screener."""
+
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+        self.calls: list[dict] = []
+
+    async def run_scan(self, tickers, universe=None, **kwargs):
+        self.calls.append({"tickers": list(tickers), "universe": universe})
+        return ("scan-z", [])
+
+
+class _ScreenerClient:
+    def __init__(self, rows=None, fail=False):
+        self.rows = rows or []
+        self.fail = fail
+        self.calls = 0
+
+    async def get_company_screener(self, params):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("HTTP 503")
+        return list(self.rows)
+
+
+def _screener_row(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "companyName": f"{symbol} Corp.",
+        "marketCap": 9e9,
+        "price": 100.0,
+        "avgVolume": 1_000_000,
+        "exchangeShortName": "NYSE",
+        "country": "US",
+        "isEtf": False,
+        "isFund": False,
+        "isActivelyTrading": True,
+    }
+
+
+@pytest.fixture
+def temp_universe_cache(monkeypatch, tmp_path):
+    from app.services import screener_universe
+    from app.services.screener_universe import UniverseCache
+
+    cache = UniverseCache(str(tmp_path / "universe_screener.json"))
+    monkeypatch.setattr(scanner_routes, "universe_cache", cache)
+    monkeypatch.setattr(screener_universe, "MIN_UNIVERSE_SIZE", 1)
+    scanner_routes._active_scans.clear()
+    yield cache
+    scanner_routes._active_scans.clear()
+
+
+async def _wait_for_run(scanner):
+    for _ in range(40):
+        if scanner.calls:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("scan never started")
+
+
+@pytest.mark.asyncio
+async def test_combined_scans_the_screener_build(client, temp_universe_cache):
+    screener = _ScreenerClient([_screener_row("AAA"), _screener_row("BBB")])
+    fake = _FakeMarket()
+    fake.scanner = _RecordingScanner(screener)
+    app.dependency_overrides[get_market] = lambda: fake
+
+    # No build on this instance yet: size unknown, and listing doesn't fetch.
+    listing = await client.get("/api/scan/universes")
+    combined = next(u for u in listing.json() if u["name"] == "combined")
+    assert combined["size"] is None
+    assert screener.calls == 0
+
+    res = await client.post("/api/scan/execute", json={"universe": "combined"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["universe"] == "combined"
+    assert body["universe_size"] == 2
+    assert body["universe_source"] == "screener"
+    assert screener.calls == 2  # US-domicile + every-domicile queries
+
+    await _wait_for_run(fake.scanner)
+    # Stage-1 cache key / scan_picks label keeps screener scans apart from
+    # the static list's.
+    assert fake.scanner.calls == [{"tickers": ["AAA", "BBB"], "universe": "combined_screener"}]
+
+    listing = await client.get("/api/scan/universes")
+    combined = next(u for u in listing.json() if u["name"] == "combined")
+    assert combined["size"] == 2
+
+
+@pytest.mark.asyncio
+async def test_combined_falls_back_to_static_list_when_screener_fails(client, temp_universe_cache):
+    from app.services.universes import get_combined_universe
+
+    fake = _FakeMarket()
+    fake.scanner = _RecordingScanner(_ScreenerClient(fail=True))
+    app.dependency_overrides[get_market] = lambda: fake
+
+    res = await client.post("/api/scan/execute", json={"universe": "combined"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["universe_source"] == "static_fallback"
+    assert body["universe_size"] == len(get_combined_universe())
+    assert "static S&P 500 + 400" in body["message"]
+
+    await _wait_for_run(fake.scanner)
+    assert fake.scanner.calls[0]["universe"] == "combined"
+
+
+@pytest.mark.asyncio
+async def test_unknown_universe_is_400_without_calling_fmp(client, temp_universe_cache):
+    screener = _ScreenerClient([_screener_row("AAA")])
+    fake = _FakeMarket()
+    fake.scanner = _RecordingScanner(screener)
+    app.dependency_overrides[get_market] = lambda: fake
+
+    res = await client.post("/api/scan/execute", json={"universe": "robinhood"})
+    assert res.status_code == 400
+    assert screener.calls == 0

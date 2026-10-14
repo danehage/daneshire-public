@@ -39,6 +39,9 @@ export function useScan() {
       setIsScanning(true);
       setError(null);
       setProgress({ current: 0, total: data.universe_size, found: 0 });
+      // Starting a scan may have (re)built the screener universe (#118);
+      // refresh the picker's sizes.
+      queryClient.invalidateQueries({ queryKey: ["universes"] });
     },
     onError: (err) => {
       setError(err.message);

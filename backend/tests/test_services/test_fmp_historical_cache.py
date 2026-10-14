@@ -139,3 +139,36 @@ async def test_short_history_ticker_returns_everything(tmp_path):
     assert len(first) == len(second) == 100
     assert second[-1]["date"] == NEWEST.isoformat()
     assert len(calls) == 1
+
+
+async def test_save_cache_false_fetches_without_writing(tmp_path):
+    """The scanner's read-only mode: no file is left behind (#118 memory)."""
+    client, calls = make_client(tmp_path)
+
+    hist = await client.get_historical_data("AAPL", days=252, save_cache=False)
+
+    assert_newest_window(hist, 252)
+    assert len(calls) == 1
+    assert not os.path.exists(client._get_hist_cache_path("AAPL"))
+
+
+async def test_save_cache_false_still_reads_existing_file(tmp_path):
+    client, calls = make_client(tmp_path)
+    await client.get_historical_data("AAPL", days=700)
+
+    hist = await client.get_historical_data("AAPL", days=252, save_cache=False)
+
+    assert_newest_window(hist, 252)
+    assert len(calls) == 1  # served from the file the first call wrote
+
+
+async def test_scanner_stage2_does_not_write_history_cache(tmp_path):
+    from app.services.scanner import StockScanner
+
+    client, calls = make_client(tmp_path)
+    scanner = StockScanner(client=client, cache_dir=str(tmp_path / "scan_cache"))
+
+    await scanner._process_ticker("AAPL", {"price": 100.0, "volume": 1_000_000})
+
+    assert len(calls) >= 1
+    assert not os.path.exists(client._get_hist_cache_path("AAPL"))

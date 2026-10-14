@@ -13,7 +13,9 @@ class UniverseInfo(BaseModel):
     """Info about a stock universe."""
 
     name: str
-    size: int
+    # None for the screener-built ``combined`` before this instance has
+    # built it (the first scan does; listing never calls FMP).
+    size: Optional[int] = None
     description: str
 
 
@@ -101,6 +103,9 @@ class ScanExecuteResponse(BaseModel):
     scan_id: str
     universe: str
     universe_size: int
+    # Where the ticker list came from: static | screener | screener_cache |
+    # screener_stale_cache | static_fallback (#118).
+    universe_source: Optional[str] = None
     message: str
 
 
