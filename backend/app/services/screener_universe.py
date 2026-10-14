@@ -177,8 +177,9 @@ def company_key(row: dict) -> tuple[str, str]:
 def _dashed(symbol: str) -> str:
     """FMP's share-class spelling. Universe tickers keep it (BRK-B, MOG-A):
     on our plan /stable/quote, historical-price-eod and the statements
-    answer 402 for the dotted BRK.B / MOG.A the static lists use, and serve
-    the dashed form (checked 2026-10-13)."""
+    answer 402 for the dotted BRK.B / MOG.A and serve the dashed form
+    (checked 2026-10-13). The static lists use dashes since #127; this
+    still normalises a caller's dotted ``index_members``."""
     return symbol.replace(".", "-")
 
 

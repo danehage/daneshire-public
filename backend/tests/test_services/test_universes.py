@@ -9,6 +9,7 @@ disjoint where claimed, and sized like the index they name.
 from app.services.universes import (
     SP400_FULL,
     SP500_FULL,
+    SP500_SAMPLE,
     UNIVERSES,
     get_combined_universe,
     get_universe,
@@ -16,7 +17,7 @@ from app.services.universes import (
 
 
 def test_sp400_sized_like_the_index():
-    # 400 constituents minus MOG.A (symbol-restricted on our FMP plan)
+    # 400 constituents minus Moog (MOG-A), whose membership is unconfirmed
     assert 395 <= len(SP400_FULL) <= 400
 
 
@@ -58,10 +59,18 @@ def test_unknown_universe_returns_empty():
 
 
 def test_symbols_are_fmp_compatible():
-    # Uppercase A-Z0-9 with optional .class suffix (BRK.B style); no
+    # Uppercase A-Z0-9 with optional -class suffix (BRK-B style); no
     # whitespace or lowercase that would break the quote URLs.
     import re
 
-    pattern = re.compile(r"^[A-Z][A-Z0-9]*(\.[A-Z])?$")
-    for sym in SP400_FULL + SP500_FULL:
+    pattern = re.compile(r"^[A-Z][A-Z0-9]*(-[A-Z])?$")
+    for sym in SP400_FULL + SP500_FULL + SP500_SAMPLE:
         assert pattern.match(sym), f"suspicious symbol: {sym!r}"
+
+
+def test_no_static_symbol_uses_dot_spelling():
+    # Our FMP plan answers 402 for BRK.B and serves BRK-B (#127). A dotted
+    # symbol silently returns no data in every scan of that universe.
+    for name, symbols in UNIVERSES.items():
+        dotted = [s for s in symbols if "." in s]
+        assert not dotted, f"{name} has dotted symbols: {dotted}"

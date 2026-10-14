@@ -112,7 +112,8 @@ def test_foreign_domicile_dropped_unless_an_index_member():
 
 
 def test_index_members_match_across_dot_and_dash_spelling():
-    # The static lists spell classes BRK.B; FMP rows say BRK-B.
+    # The static lists use FMP's BRK-B since #127; a dotted member list
+    # (a caller's own, or an old one) must still match FMP's dashed rows.
     b = build(row("XYZ-B", "Foreign Class B Co", country="BM"), members=("XYZ.B",))
     assert b.tickers == ["XYZ-B"]
 
@@ -121,6 +122,13 @@ def test_default_index_members_are_the_static_sp500_and_400():
     member = next(t for t in SP500_FULL if "." not in t)
     b = build_screener_universe([row(member, "Some plc", country="IE")])
     assert b.tickers == [member]
+
+
+def test_default_index_members_include_dashed_share_classes():
+    # BRK-B is in the static S&P 500 list, so a non-US-domiciled row with
+    # that symbol passes the foreign rule (domicile is faked to test it).
+    b = build_screener_universe([row("BRK-B", "Berkshire Hathaway Inc.", country="BM")])
+    assert b.tickers == ["BRK-B"]
 
 
 def test_preferred_warrant_unit_and_right_symbols_are_dropped():

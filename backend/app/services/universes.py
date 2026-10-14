@@ -6,11 +6,15 @@ The default ``combined`` scan is built from FMP's company screener since
 ``sp500`` / ``sp400`` / ``sp500_sample`` are still selectable, and the
 S&P 500 + 400 union is the fallback when the screener is unavailable (and
 the backtest's ``current900`` replay).
+
+Share classes use FMP's dash spelling (BRK-B, BF-B). On our plan
+/stable/quote, historical-price-eod and the statement endpoints answer 402
+for the dotted BRK.B and serve BRK-B (#127).
 """
 
 # S&P 500 Sample - 100 representative large caps
 SP500_SAMPLE = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK.B",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
     "UNH", "JNJ", "V", "WMT", "JPM", "MA", "PG", "HD",
     "CVX", "XOM", "ABBV", "MRK", "KO", "PEP", "COST", "AVGO",
     "LLY", "BAC", "PFE", "TMO", "CSCO", "ORCL", "ACN", "MCD",
@@ -33,8 +37,8 @@ SP500_FULL = [
     "AMP", "AME", "AMGN", "APH", "ADI", "AON", "APA", "APO", "AAPL", "AMAT",
     "APP", "APTV", "ACGL", "ADM", "ARES", "ANET", "AJG", "AIZ", "T", "ATO",
     "ADSK", "ADP", "AZO", "AVB", "AVY", "AXON", "BKR", "BALL", "BAC", "BAX",
-    "BDX", "BRK.B", "BBY", "TECH", "BIIB", "BLK", "BX", "XYZ", "BK", "BA",
-    "BKNG", "BSX", "BMY", "AVGO", "BR", "BRO", "BF.B", "BLDR", "BG", "BXP",
+    "BDX", "BRK-B", "BBY", "TECH", "BIIB", "BLK", "BX", "XYZ", "BK", "BA",
+    "BKNG", "BSX", "BMY", "AVGO", "BR", "BRO", "BF-B", "BLDR", "BG", "BXP",
     "CHRW", "CDNS", "CPT", "CPB", "COF", "CAH", "CCL", "CARR", "CVNA", "CASY",
     "CAT", "CBOE", "CBRE", "CDW", "COR", "CNC", "CNP", "CF", "CRL", "SCHW",
     "CHTR", "CVX", "CMG", "CB", "CHD", "CIEN", "CI", "CINF", "CTAS", "CSCO",
@@ -82,8 +86,12 @@ SP500_FULL = [
 
 # S&P MidCap 400 constituents (fetched from the public constituent list
 # 2026-07-08; refresh the same way when the index reconstitutes).
-# Disjoint from S&P 500 by construction. MOG.A excluded: symbol-restricted
-# on our FMP plan, would burn a dead API call every scan. 399 names.
+# Disjoint from S&P 500 by construction. 399 names: Moog (MOG-A) was a
+# member on 2026-07-08 but left out as "symbol-restricted". The real cause
+# was the dotted spelling MOG.A, which our FMP plan answers with 402 (#127).
+# Not re-added because its current membership couldn't be confirmed; FMP has
+# no S&P 400 constituent endpoint. Add it as MOG-A on the next refresh if
+# it is still listed.
 SP400_FULL = [
     "AA", "AAL", "AAON", "ACI", "ACM", "ADC", "AEIS", "AFG", "AGCO", "AHR",
     "AIT", "ALGM", "ALK", "ALLY", "ALSN", "ALV", "AM", "AMG", "AMH", "AMKR",
