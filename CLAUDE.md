@@ -215,9 +215,9 @@ At the start of every session:
 
 GitHub Issues at `danehage/daneshire`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
-### Triage labels
+### Working the issue queue
 
-Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+No triage labels: every open issue is in the queue, and an agent can take any of them. Each issue becomes one PR; the agent never merges (a merge to master deploys). If an issue needs something from "What to ask about before doing" that the issue doesn't already decide, comment the question on the issue and move to the next one instead of guessing.
 
 ### Domain docs
 
