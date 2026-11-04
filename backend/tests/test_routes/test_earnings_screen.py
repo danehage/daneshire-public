@@ -512,3 +512,65 @@ async def test_backfill_respects_limit_param(
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_events"] == 3  # limit applied at query level
+
+
+class _FakeMarketDailyBars:
+    """Fake market with one flat-ish daily bar per day for the last 60 days,
+    so any recent report date has both price anchors."""
+
+    def __init__(self):
+        self.history_calls: list[str] = []
+        self._bars = [
+            _FakeBar((_TODAY - timedelta(days=i)).isoformat(), 100.0 + (i % 2))
+            for i in range(60, 0, -1)
+        ]
+
+    async def history(self, ticker, days=252):
+        self.history_calls.append(ticker)
+        return _FakeHistoryFrame(self._bars)
+
+    async def analyses(self, tickers):
+        return {}
+
+    async def quotes(self, tickers):
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_backfill_waits_until_date_can_no_longer_drift(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """#106: events inside the drift window (report_date >= today - 14) are
+    not measured yet, because Finnhub may still move an estimated date and a
+    measured row is locked. Events older than that are measured."""
+    from sqlalchemy import select
+
+    await seed_event(db_session, "AAPL", _TODAY - timedelta(days=3), report_time="bmo")
+    await seed_event(db_session, "MSFT", _TODAY - timedelta(days=14), report_time="bmo")
+    await seed_event(db_session, "NVDA", _TODAY - timedelta(days=15), report_time="bmo")
+    await db_session.commit()
+
+    market = _FakeMarketDailyBars()
+    _set_market(market)
+    try:
+        resp = await client.post(
+            "/api/internal/earnings/backfill-realized-moves",
+            headers=auth_headers(),
+        )
+    finally:
+        _clear_market()
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_events"] == 1
+    assert data["processed"] == 1
+    assert market.history_calls == ["NVDA"]
+
+    db_session.expire_all()
+    rows = {
+        r.ticker: r
+        for r in (await db_session.execute(select(EarningsEvent))).scalars().all()
+    }
+    assert rows["AAPL"].realized_move_pct is None
+    assert rows["MSFT"].realized_move_pct is None
+    assert rows["NVDA"].realized_move_pct is not None

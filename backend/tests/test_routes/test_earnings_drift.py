@@ -411,6 +411,43 @@ async def test_drift_moves_unrealized_past_row_null_fiscal_period(
 
 
 @pytest.mark.asyncio
+async def test_backfill_then_refresh_still_moves_estimated_past_row(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """#106: Q3 estimated for 3 days ago, then the realized-move backfill
+    runs before Finnhub corrects the date. The backfill must not measure
+    (and so lock) the phantom row, or the correction inserts a second Q3
+    row next to a phantom with a made-up move."""
+    old_date = TODAY - timedelta(days=3)
+    new_date = TODAY + timedelta(days=4)
+
+    event_id = await _insert_event(db_session, "AAPL", old_date, fiscal_period="Q3 2026")
+
+    # _FakeMarket.history raises: the backfill must not even fetch bars.
+    _set_market(_FakeMarket([_raw_event("AAPL", new_date, year=2026, quarter=3)]))
+    try:
+        backfill = await client.post(
+            "/api/internal/earnings/backfill-realized-moves", headers=auth_headers()
+        )
+        refresh = await client.post(
+            "/api/internal/earnings/refresh-calendar", headers=auth_headers()
+        )
+    finally:
+        _clear_market()
+
+    assert backfill.status_code == 200
+    assert backfill.json()["total_events"] == 0
+    assert refresh.status_code == 200
+
+    db_session.expire_all()
+    assert await _event_count(db_session, "AAPL") == 1
+    event = await _fetch_event(db_session, event_id)
+    assert event is not None
+    assert event.report_date == new_date
+    assert event.realized_move_pct is None
+
+
+@pytest.mark.asyncio
 async def test_drift_leaves_realized_past_row_alone(
     client: AsyncClient, db_session: AsyncSession
 ):

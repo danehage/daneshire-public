@@ -328,13 +328,17 @@ async def backfill_realized_moves(
     Idempotent — events already having a value are skipped. Processes up
     to ``limit`` events per call (default 50) for pagination-friendly
     operation under Cloud Run's request timeout. Oldest events first.
-    """
-    today = date.today()
 
-    # Fetch past events missing realized_move_pct, oldest first.
+    Events less than ``REALIZED_MOVE_SETTLE_DAYS`` old are left for a later
+    run: their date may still be an estimate Finnhub corrects, and a
+    measured row can no longer be moved (#106).
+    """
+    cutoff = earnings_merge.realized_move_cutoff(date.today())
+
+    # Fetch settled past events missing realized_move_pct, oldest first.
     stmt = (
         select(EarningsEvent)
-        .where(EarningsEvent.report_date < today)
+        .where(EarningsEvent.report_date < cutoff)
         .where(EarningsEvent.realized_move_pct.is_(None))
         .order_by(EarningsEvent.report_date.asc())
         .limit(limit)

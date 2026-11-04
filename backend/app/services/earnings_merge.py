@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 
 DRIFT_WINDOW_DAYS = 14  # ±14 days for null-fiscal_period matching (#75)
 
+# A past row with a realized move is never drifted (see find_drifted_row), so
+# measuring one too early locks in a date that may only have been an
+# estimate (#106). refresh-calendar's incoming dates are >= today, so a past
+# row can still be drifted only while report_date >= today - DRIFT_WINDOW_DAYS.
+# backfill-realized-moves waits until that window has closed.
+REALIZED_MOVE_SETTLE_DAYS = DRIFT_WINDOW_DAYS
+
+
+def realized_move_cutoff(today: date) -> date:
+    """Exclusive upper bound on report_date for a realized-move measurement.
+    A row dated before it can no longer be drifted by refresh-calendar."""
+    return today - timedelta(days=REALIZED_MOVE_SETTLE_DAYS)
+
 
 async def find_drifted_row(
     db: AsyncSession,
