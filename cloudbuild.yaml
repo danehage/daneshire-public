@@ -199,7 +199,10 @@ steps:
       - |
         set +x
         set -eu
-        URL=$$(gcloud run services describe danecast-trades --region us-central1 --format=json | python3 -c "import json,sys; print(next(t['url'] for t in json.load(sys.stdin)['status'].get('traffic', []) if t.get('tag') == 'candidate'))")
+        # No python3 in the cloud-sdk image any more (build a4bd004a, 2026-11-04):
+        # read the candidate tag's URL with a gcloud projection instead.
+        URL=$$(gcloud run services describe danecast-trades --region us-central1 --flatten=status.traffic --format="value(status.traffic.tag,status.traffic.url)" | awk -F'\t' '$$1 == "candidate" { print $$2 }')
+        [ -n "$$URL" ] || { echo "No candidate-tagged revision found"; exit 1; }
         echo "Candidate URL: $$URL"
         check() {
           for i in $$(seq 1 10); do
