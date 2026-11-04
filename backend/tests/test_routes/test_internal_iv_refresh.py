@@ -603,9 +603,9 @@ async def test_snapshots_fetched_and_committed_in_batches(
 ):
     """The fetch/write cycle must be chunked so no transaction spans a
     long provider fetch (Neon closes idle in-transaction connections)."""
-    from app.routes import internal as internal_module
+    from app.services import iv_snapshots
 
-    monkeypatch.setattr(internal_module, "_SNAPSHOT_BATCH_SIZE", 2)
+    monkeypatch.setattr(iv_snapshots, "SNAPSHOT_BATCH_SIZE", 2)
 
     for t in ("AAA", "BBB", "CCC"):
         await _add_watchlist(db_session, t)
