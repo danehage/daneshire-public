@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.watchlist import WatchlistItem
+from app.models.watchlist import ACTIVE_STATUSES, WatchlistItem
 from app.schemas.watchlist import (
     WatchlistItemCreate,
     WatchlistItemUpdate,
@@ -16,9 +16,6 @@ from app.schemas.watchlist import (
 )
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
-
-# Statuses that count as "on the watchlist" for duplicate detection.
-ACTIVE_STATUSES = ("watching", "owned", "position_open")
 
 
 @router.get("", response_model=list[WatchlistItemResponse])

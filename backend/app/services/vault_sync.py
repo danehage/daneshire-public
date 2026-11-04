@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.trade_campaigns import TradeCampaign
-from app.models.watchlist import WatchlistItem
+from app.models.watchlist import WatchlistItem, active_first_order
 from app.schemas.trade_campaigns import VaultSyncFile, VaultSyncResponse
 
 logger = logging.getLogger(__name__)
@@ -208,13 +208,14 @@ class VaultSyncService:
         watchlist. Never downgrades data — only fills/updates from the vault,
         which is authoritative for entries.
         """
-        # Oldest row first, matching snapshots/commit: ticker has no unique
-        # constraint, so with duplicates an unordered .first() could promote a
-        # different row each sync.
+        # Active rows first, then oldest, matching snapshots/commit: ticker
+        # has no unique constraint, so with duplicates an unordered .first()
+        # could promote a different row each sync, and a plain oldest-first
+        # would reopen a closed row beside the active one.
         result = await self.db.execute(
             select(WatchlistItem)
             .where(WatchlistItem.ticker == ticker)
-            .order_by(WatchlistItem.created_at)
+            .order_by(*active_first_order())
         )
         item = result.scalars().first()
         changed = False

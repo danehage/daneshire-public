@@ -1449,3 +1449,44 @@ async def test_upload_rejects_empty_image(fake_parser_client: AsyncClient):
         files={"image": ("empty.png", io.BytesIO(b""), "image/png")},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_commit_snapshot_owns_active_row_not_older_closed_row(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Sold out (row closed), re-added to watch (new row), bought again: the
+    commit must promote the active row. Picking the oldest row reopened the
+    closed one beside it, leaving two active rows for one ticker."""
+    closed = WatchlistItem(
+        ticker="AAPL", status="closed", sort_order=1, tags=[],
+        created_at=datetime(2026, 1, 5, tzinfo=timezone.utc),
+    )
+    watching = WatchlistItem(
+        ticker="AAPL", status="watching", sort_order=2, tags=[],
+        created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+    )
+    db_session.add_all([closed, watching])
+    await db_session.commit()
+
+    payload = {
+        "account_name": "Taxable",
+        "captured_at": "2026-06-17T12:00:00Z",
+        "positions": [
+            {"instrument_type": "equity", "ticker": "AAPL", "qty": "10", "avg_cost": "180.00"},
+        ],
+    }
+    response = await client.post("/api/portfolio/snapshots/commit", json=payload)
+    assert response.status_code == 201
+    assert response.json()["holdings"][0]["watchlist_item_id"] == str(watching.id)
+
+    db_session.expire_all()
+    rows = {
+        r.id: r.status
+        for r in (
+            await db_session.execute(
+                select(WatchlistItem).where(WatchlistItem.ticker == "AAPL")
+            )
+        ).scalars()
+    }
+    assert rows == {closed.id: "closed", watching.id: "owned"}

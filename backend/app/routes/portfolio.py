@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.portfolio import Account, Holding, PortfolioSnapshot, Trade
-from app.models.watchlist import WatchlistItem
+from app.models.watchlist import WatchlistItem, active_first_order
 from app.routes.dependencies import get_portfolio_engine, get_vision_parser
 from app.schemas.portfolio import (
     AccountResponse,
@@ -329,10 +329,11 @@ async def _persist_snapshot(
         existing_result = await db.execute(
             select(WatchlistItem)
             .where(WatchlistItem.ticker == ticker)
-            .order_by(WatchlistItem.created_at)
+            .order_by(*active_first_order())
         )
         # `.first()`, not `.scalar_one_or_none()`: ticker has no unique
         # constraint, so duplicates are possible and must not blow up here.
+        # Active rows first, so a closed row isn't reopened beside one.
         wl_item = existing_result.scalars().first()
         if wl_item is not None:
             wl_item.status = "owned"

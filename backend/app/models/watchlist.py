@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Index,
     Integer,
+    case,
     String,
     Date,
     Numeric,
@@ -17,6 +18,9 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+
+# Statuses that count as "on the watchlist" for duplicate detection.
+ACTIVE_STATUSES = ("watching", "owned", "position_open")
 
 
 class WatchlistItem(Base):
@@ -66,4 +70,17 @@ class WatchlistItem(Base):
         ),
         Index("idx_watchlist_status", "status"),
         Index("idx_watchlist_ticker", "ticker"),
+    )
+
+
+def active_first_order():
+    """ORDER BY for picking one row per ticker: active rows, then oldest.
+
+    ticker has no unique constraint. A closed row stays behind when a ticker
+    is re-added (#100), so "oldest row" alone can pick the closed one and
+    reopen it next to the active row, leaving two active rows.
+    """
+    return (
+        case((WatchlistItem.status.in_(ACTIVE_STATUSES), 0), else_=1),
+        WatchlistItem.created_at,
     )

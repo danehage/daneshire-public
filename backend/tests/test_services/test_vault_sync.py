@@ -6,7 +6,7 @@ Campaign fixtures are synthetic but mirror the real DaneBrain format exactly
 sections).
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -289,3 +289,34 @@ async def test_sync_route_and_list_and_detail(client):
 async def test_sync_route_rejects_empty_file_list(client):
     response = await client.post("/api/trade-campaigns/sync", json={"files": []})
     assert response.status_code == 422
+
+
+async def test_open_campaign_owns_active_row_not_older_closed_row(db_session):
+    """With a closed row from an earlier position and a newer watching row,
+    the sync promotes the watching row. Oldest-first reopened the closed
+    row beside it, leaving two active rows for one ticker."""
+    closed = WatchlistItem(
+        ticker="UPS", status="closed",
+        created_at=datetime(2025, 11, 1, tzinfo=timezone.utc),
+    )
+    watching = WatchlistItem(
+        ticker="UPS", status="watching",
+        created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    db_session.add_all([closed, watching])
+    await db_session.commit()
+
+    await VaultSyncService(db_session).sync(
+        _files(("Open/UPS-2026-04.md", OPEN_CAMPAIGN))
+    )
+
+    db_session.expire_all()
+    rows = {
+        r.id: r.status
+        for r in (
+            await db_session.execute(
+                select(WatchlistItem).where(WatchlistItem.ticker == "UPS")
+            )
+        ).scalars()
+    }
+    assert rows == {closed.id: "closed", watching.id: "owned"}
