@@ -209,6 +209,20 @@ At the start of every session:
 - Anything involving Cloud Run or Cloud Scheduler config
 - Changing API route structure
 
+## Code review policy
+
+- Review diffs, not the whole repo. Whole-repo sweeps have hit diminishing
+  returns; reviewers asked to find problems always find ~10.
+- A finding needs a concrete failure scenario (inputs/state → wrong result)
+  that affects users, security, data, or money. "Could be cleaner" is not a
+  finding. Zero findings is an acceptable answer.
+- Before filing or fixing, try to disprove the finding against the code and
+  check it against the accepted trade-offs recorded here. Verify a proposed
+  fix against every caller of the code it changes.
+- Refactor suggestions wait until we're working in that code anyway.
+- Production signals (error logs, user reports) outrank review opinions
+  about code that's running fine.
+
 ## Agent skills
 
 ### Issue tracker
