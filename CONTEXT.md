@@ -82,8 +82,10 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 **HV Rank** — historical-volatility-rank proxy. Not implied volatility. UI labels must say "HV Rank", never "IV Rank".
 
-**Fact columns** — since #117 the scanner is a quality-gated research shortlist, not a ranker. Each row shows sortable facts: % off the 52-week high, last earnings reaction vs SPY, last EPS beat/miss, trend vs the 50/200-day MAs, HV Rank, days to next report, sector, market cap. Default sort is ticker A→Z, so no column implies conviction.
+**Fact columns** — since #117 the scanner is a quality-gated research shortlist, not a ranker. Each row shows sortable facts: % off the 52-week high, last earnings reaction vs SPY, last EPS beat/miss, trend vs the 50/200-day MAs, HV Rank, days to next report, sector, market cap. Default sort is **Setup fit** (since 2026-10-15; before that ticker A→Z).
 
 **Earnings reaction vs SPY** — signed % move from the close before the last report date to the close of the first session after it, minus SPY over the same two closes. FMP's earnings feed has no before-open/after-close flag, so one window covers both (exact for after-close reporters; one extra session for before-open ones). Empty until that next session closes.
+
+**Setup fit** — the scanner's default sort since 2026-10-15: how many of Dane's four setup traits a row matches (0–4, equal weight, missing data = not met): 20–40% off the 52-week high, RSI higher low (`rsi_floor_delta > 0`), bounce holding (`post_low_trend == "rising"`), beat but dropped (EPS beat, earnings reaction vs SPY < 0). It is a **reading order** for 700+ gate passers, not a prediction: it describes the setups Dane researches and claims nothing about returns, so the #114 verdict doesn't bar it. Test it against the decision log (#119), not by tuning. Computed in the page (`SETUP_TRAITS` in `ScannerPage.jsx`); it does not order `scan_picks.rank`.
 
 **Legacy score** — `StockScanner._score_opportunity`, the old composite fit to five trades. Its top 15 trailed SPY out-of-sample (ADR-0007 verdict, #114). Shown as the last column and still orders `scan_picks.rank`; remove ~2027-01-10. Never the default sort; do not tune it.

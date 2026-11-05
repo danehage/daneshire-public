@@ -166,8 +166,71 @@ function formatCap(v) {
   return `$${(v / 1e6).toFixed(0)}M`;
 }
 
+// Setup fit: Dane's own description of the setups he researches (agreed
+// 2026-10-15). It is a reading order, not a prediction. Every trait counts
+// once. Missing data counts as not met.
+const SETUP_TRAITS = [
+  {
+    key: "drawdown",
+    label: "20–40% off high",
+    met: (r) => r.pct_off_high != null && r.pct_off_high <= -20 && r.pct_off_high >= -40,
+  },
+  {
+    key: "rsi_higher_low",
+    label: "RSI higher low",
+    met: (r) => r.rsi_floor_delta != null && r.rsi_floor_delta > 0,
+  },
+  {
+    key: "bounce_holding",
+    label: "Bounce holding",
+    met: (r) => r.post_low_trend === "rising",
+  },
+  {
+    key: "beat_but_dropped",
+    label: "Beat but dropped",
+    met: (r) =>
+      r.eps_surprise_pct != null &&
+      r.eps_surprise_pct > 0 &&
+      r.earnings_reaction_vs_spy != null &&
+      r.earnings_reaction_vs_spy < 0,
+  },
+];
+
+function setupFit(r) {
+  return SETUP_TRAITS.filter((t) => t.met(r)).length;
+}
+
+function SetupFitCell({ result }) {
+  const fit = setupFit(result);
+  const title = SETUP_TRAITS.map(
+    (t) => `${t.met(result) ? "✓" : "✗"} ${t.label}`
+  ).join("\n");
+  return (
+    <span className="whitespace-nowrap" title={title}>
+      <span className={`font-mono ${fit >= 3 ? "text-gain font-semibold" : "text-ink"}`}>
+        {fit}/{SETUP_TRAITS.length}
+      </span>
+      <span className="ml-1 font-mono text-xs tracking-tighter">
+        {SETUP_TRAITS.map((t) => (
+          <span key={t.key} className={t.met(result) ? "text-gain" : "text-light-brown"}>
+            ●
+          </span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
 const COLUMNS = [
   { key: "ticker", label: "Ticker", dir: "asc", get: (r) => r.ticker },
+  {
+    key: "setup_fit",
+    label: "Setup Fit",
+    dir: "desc",
+    get: setupFit,
+    title:
+      "How many of your setup traits this row matches: 20–40% off the 52w high, RSI higher low, bounce holding, beat but dropped. A reading order, not a prediction",
+  },
   { key: "price", label: "Price", dir: "desc", get: (r) => r.price },
   {
     key: "pct_off_high",
@@ -222,7 +285,7 @@ const COLUMNS = [
   },
 ];
 
-const DEFAULT_SORT = { key: "ticker", dir: "asc" };
+const DEFAULT_SORT = { key: "setup_fit", dir: "desc" };
 
 function sortRows(rows, { key, dir }) {
   const col = COLUMNS.find((c) => c.key === key) ?? COLUMNS[0];
@@ -339,6 +402,9 @@ function ResultRow({ result, onAddToWatchlist, isAdding, onDecide }) {
             <span className="font-serif text-lg text-ink">{result.ticker}</span>
           </div>
           {failedGate && <GateFailures fails={result.quality_fails} />}
+        </td>
+        <td className="py-3 px-3 text-sm">
+          <SetupFitCell result={result} />
         </td>
         <td className="py-3 px-3 font-mono">${result.price.toFixed(2)}</td>
         <td className="py-3 px-3 text-sm">
@@ -478,6 +544,21 @@ function ResultRow({ result, onAddToWatchlist, isAdding, onDecide }) {
                   <span className="text-mid-brown">10d Momentum:</span>{" "}
                   {num(result.momentum_10d, 1, { suffix: "%" })}
                 </p>
+              </div>
+            </div>
+            <div className="mt-4">
+              <h4 className="text-xs font-medium uppercase tracking-wide text-dark-brown mb-2">
+                Setup fit
+              </h4>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {SETUP_TRAITS.map((t) => (
+                  <span
+                    key={t.key}
+                    className={t.met(result) ? "text-gain" : "text-light-brown"}
+                  >
+                    {t.met(result) ? "✓" : "✗"} {t.label}
+                  </span>
+                ))}
               </div>
             </div>
             <div className="mt-4">
