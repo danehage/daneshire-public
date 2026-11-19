@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from app.services.fmp_client import FMPClient
+from app.services.fmp_client import FMPClient, RequestFailure
 from app.services.scanner import StockScanner
 
 
@@ -64,6 +64,50 @@ async def test_chunks_universe_into_bulk_requests(tmp_path):
     assert len(_requested_symbols(urls[2])) == 50
     assert len(quotes) == 250
     assert quotes["TK0"]["price"] == 50.0
+
+
+async def test_on_progress_fires_after_each_bulk_chunk(tmp_path):
+    client = make_client(tmp_path)
+
+    async def fake_request(url, http_client, retries=None):
+        return FakeResponse([quote_for(s) for s in _requested_symbols(url)])
+
+    client._request_with_retry = fake_request
+    calls: list[tuple[int, int]] = []
+
+    async def on_progress(done, total):
+        calls.append((done, total))
+
+    await client.get_batch_quotes(
+        [f"TK{i}" for i in range(250)], on_progress=on_progress
+    )
+
+    assert calls == [(100, 250), (200, 250), (250, 250)]
+
+
+async def test_on_progress_moves_during_individual_fallback(tmp_path):
+    """A plan without the bulk endpoint spends minutes on singles (HTTP 402)."""
+    client = make_client(tmp_path)
+
+    async def fake_request(url, http_client, retries=None):
+        if "/stable/batch-quote" in url:
+            client.last_failure = RequestFailure(402, "Restricted Endpoint")
+            return None
+        return FakeResponse([quote_for(url.split("symbol=")[1].split("&")[0])])
+
+    client._request_with_retry = fake_request
+    calls: list[int] = []
+
+    async def on_progress(done, total):
+        assert total == 25
+        calls.append(done)
+
+    quotes = await client.get_batch_quotes(
+        [f"TK{i}" for i in range(25)], on_progress=on_progress
+    )
+
+    assert len(quotes) == 25
+    assert calls == [10, 20, 25]
 
 
 async def test_dot_class_symbols_map_back_to_requested_spelling(tmp_path):
@@ -131,7 +175,7 @@ class FakeFMPForScanner:
     def __init__(self, answered: set[str]):
         self.answered = answered
 
-    async def get_batch_quotes(self, tickers, max_concurrent=10):
+    async def get_batch_quotes(self, tickers, max_concurrent=10, on_progress=None):
         return {t: quote_for(t) for t in tickers if t in self.answered}
 
     async def get_historical_data(self, ticker, days=252, use_cache=True, save_cache=True):

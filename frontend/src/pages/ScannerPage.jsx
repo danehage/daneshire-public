@@ -33,19 +33,20 @@ function UniverseSelector({ value, onChange, universes }) {
   );
 }
 
-function ProgressBar({ current, total, found, errors }) {
+function ProgressBar({ stage, current, total, found, errors }) {
   const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+  const fetchingQuotes = stage === "quotes";
 
   return (
     <div className="space-y-2">
       <div className="flex justify-between text-sm text-mid-brown">
         <span>
-          Analyzing {current} of {total}
-          {errors > 0 && (
+          {fetchingQuotes ? "Fetching quotes" : "Analyzing"} {current} of {total}
+          {!fetchingQuotes && errors > 0 && (
             <span className="text-warning ml-2">({errors} errors)</span>
           )}
         </span>
-        <span>{found} opportunities found</span>
+        {!fetchingQuotes && <span>{found} opportunities found</span>}
       </div>
       <div className="h-4 border-2 border-ink bg-cream">
         <div
@@ -758,6 +759,7 @@ export default function ScannerPage() {
       {isScanning && progress && (
         <div className="border-2 border-ink shadow-hard bg-warm-white p-6">
           <ProgressBar
+            stage={progress.stage}
             current={progress.current}
             total={progress.total}
             found={progress.found}
@@ -804,7 +806,9 @@ export default function ScannerPage() {
               {isSaved
                 ? `Saved scan of ${results.universe}`
                 : results.partial
-                ? `${progress?.current ?? results.total_analyzed} of ${progress?.total ?? "?"} analyzed`
+                ? progress?.stage === "quotes"
+                  ? "Fetching quotes"
+                  : `${progress?.current ?? results.total_analyzed} of ${progress?.total ?? "?"} analyzed`
                 : `Scanned ${results.total_analyzed} stocks`}
               {results.errors > 0 && (
                 <span className="text-warning ml-1">

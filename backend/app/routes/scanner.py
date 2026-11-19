@@ -200,7 +200,13 @@ async def execute_scan(
         "universe_size": len(tickers),
         "universe_source": resolved.source,
         "started_at": datetime.utcnow(),
-        "progress": {"current": 0, "total": 0, "found": 0, "errors": 0},
+        "progress": {
+            "stage": "quotes",
+            "current": 0,
+            "total": len(tickers),
+            "found": 0,
+            "errors": 0,
+        },
         "results": live_results,
         "errors": 0,
         "scan_id": temp_scan_id,
@@ -212,6 +218,7 @@ async def execute_scan(
         """Update scan state with progress."""
         if event["type"] == "progress":
             scan_state["progress"] = {
+                "stage": event.get("stage", "analysis"),
                 "current": event["current"],
                 "total": event["total"],
                 "found": event["found"],

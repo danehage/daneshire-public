@@ -495,6 +495,20 @@ class StockScanner:
         survivors: dict[str, dict] = {}
         digest = universe_digest(tickers)
 
+        async def report_quotes(done: int, quote_total: int):
+            if progress_callback:
+                await progress_callback(
+                    {
+                        "type": "progress",
+                        "scan_id": scan_id,
+                        "stage": "quotes",
+                        "current": done,
+                        "total": quote_total,
+                        "found": 0,
+                        "errors": 0,
+                    }
+                )
+
         if use_cache:
             cache_data = self._load_cache(cache_key)
             if cache_data and cache_data.get("universe_digest") != digest:
@@ -508,7 +522,10 @@ class StockScanner:
             if cache_data:
                 cached_tickers = self._cached_survivor_tickers(cache_data)
                 if cached_tickers:
-                    fresh = await self.client.get_batch_quotes(cached_tickers)
+                    await report_quotes(0, len(cached_tickers))
+                    fresh = await self.client.get_batch_quotes(
+                        cached_tickers, on_progress=report_quotes
+                    )
                     survivors = {t: q for t, q in fresh.items() if _passes_stage1(q)}
                     logger.info(
                         f"Loaded {len(cached_tickers)} Stage 1 survivors from "
@@ -518,7 +535,10 @@ class StockScanner:
 
         if not survivors:
             logger.info(f"Fetching quotes for {len(tickers)} stocks...")
-            all_quotes = await self.client.get_batch_quotes(tickers)
+            await report_quotes(0, len(tickers))
+            all_quotes = await self.client.get_batch_quotes(
+                tickers, on_progress=report_quotes
+            )
             logger.info(f"Got {len(all_quotes)} quotes")
 
             # Apply Stage 1 filters
@@ -562,6 +582,19 @@ class StockScanner:
 
         logger.info(f"Starting Stage 2 analysis of {total} stocks...")
 
+        if progress_callback:
+            await progress_callback(
+                {
+                    "type": "progress",
+                    "scan_id": scan_id,
+                    "stage": "analysis",
+                    "current": 0,
+                    "total": total,
+                    "found": 0,
+                    "errors": 0,
+                }
+            )
+
         async def process_one(ticker: str, quote: dict):
             nonlocal completed, errors
             async with semaphore:
@@ -594,6 +627,7 @@ class StockScanner:
                         {
                             "type": "progress",
                             "scan_id": scan_id,
+                            "stage": "analysis",
                             "current": completed,
                             "total": total,
                             "found": len(results),

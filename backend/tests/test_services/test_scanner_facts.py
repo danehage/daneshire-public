@@ -85,7 +85,7 @@ class FakeFMP:
             "last_eps_estimate": 2.0,
         }
 
-    async def get_batch_quotes(self, tickers, max_concurrent=10):
+    async def get_batch_quotes(self, tickers, max_concurrent=10, on_progress=None):
         return {t: {"price": 120.0, "volume": 1_000_000, "marketCap": 5e9} for t in tickers}
 
 

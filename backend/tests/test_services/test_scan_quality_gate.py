@@ -207,7 +207,7 @@ async def test_db_outage_leaves_rows_unjudged():
 
 
 class _ScanClient:
-    async def get_batch_quotes(self, tickers, max_concurrent=10):
+    async def get_batch_quotes(self, tickers, max_concurrent=10, on_progress=None):
         return {t: {"price": PRICE, "volume": 1_000_000, "marketCap": 1e10} for t in tickers}
 
 

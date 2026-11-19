@@ -8,7 +8,7 @@ import logging
 import os
 import re
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from urllib.parse import parse_qs, quote as urlquote, urlsplit
 from dataclasses import dataclass
@@ -321,9 +321,13 @@ class FMPClient:
             return None
 
     BATCH_QUOTE_CHUNK = 100
+    QUOTE_PROGRESS_EVERY = 10
 
     async def get_batch_quotes(
-        self, tickers: list[str], max_concurrent: int = 10
+        self,
+        tickers: list[str],
+        max_concurrent: int = 10,
+        on_progress: Optional[Callable[[int, int], Awaitable[None]]] = None,
     ) -> dict[str, dict]:
         """
         Fetch quotes via FMP's bulk endpoint, BATCH_QUOTE_CHUNK symbols per
@@ -335,6 +339,11 @@ class FMPClient:
         (or the bulk endpoint is unavailable on the plan), falls back to
         throttled individual requests for that chunk so symbols are never
         silently dropped wholesale.
+
+        ``on_progress(done, total)`` is awaited after each chunk, and every
+        QUOTE_PROGRESS_EVERY symbols on the individual path, where a
+        whole-universe fetch takes minutes. ``done`` counts symbols
+        attempted, not quotes collected.
         """
         all_quotes: dict[str, dict] = {}
         total = len(tickers)
@@ -401,7 +410,7 @@ class FMPClient:
                                 "run after %s; using individual requests.",
                                 failure.describe(),
                             )
-                    for ticker in chunk:
+                    for offset, ticker in enumerate(chunk, start=1):
                         single_url = (
                             f"{self.BASE_URL}/stable/quote"
                             f"?symbol={urlquote(fmp_symbol(ticker), safe='')}&apikey={self.api_key}"
@@ -413,6 +422,11 @@ class FMPClient:
                                 all_quotes[ticker] = data[0]
                             elif isinstance(data, dict) and data:
                                 all_quotes[ticker] = data
+                        if on_progress and offset % self.QUOTE_PROGRESS_EVERY == 0:
+                            await on_progress(i + offset, total)
+
+                if on_progress:
+                    await on_progress(i + len(chunk), total)
 
         missing = total - len(all_quotes)
         logger.info(

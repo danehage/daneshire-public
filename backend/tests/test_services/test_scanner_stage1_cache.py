@@ -29,7 +29,7 @@ class FakeClient:
         self.quotes = quotes
         self.batch_calls: list[list[str]] = []
 
-    async def get_batch_quotes(self, tickers, max_concurrent=10):
+    async def get_batch_quotes(self, tickers, max_concurrent=10, on_progress=None):
         self.batch_calls.append(list(tickers))
         return {t: dict(self.quotes[t]) for t in tickers if t in self.quotes}
 
@@ -138,3 +138,83 @@ async def test_cache_from_a_different_universe_is_not_reused(tmp_path):
 def test_universe_digest_ignores_order():
     assert universe_digest(["B", "A"]) == universe_digest(["A", "B"])
     assert universe_digest(["A"]) != universe_digest(["A", "B"])
+
+
+def _recorder():
+    events: list[dict] = []
+
+    async def record(event):
+        events.append(event)
+
+    return events, record
+
+
+def _stages(events: list[dict]) -> list[tuple]:
+    return [
+        (e["stage"], e["current"], e["total"])
+        for e in events
+        if e["type"] == "progress"
+    ]
+
+
+async def test_progress_covers_the_quote_stage_then_analysis(tmp_path):
+    universe = ["AAA", "BBB", "PENNY"]
+    client = FakeClient(
+        {
+            "AAA": _quote(100.0, 200_000),
+            "BBB": _quote(50.0, 300_000),
+            "PENNY": _quote(5.0, 900_000),  # fails Stage 1
+        }
+    )
+    scanner, _ = _make_scanner(tmp_path, client)
+    events, record = _recorder()
+
+    await scanner.run_scan(
+        universe, use_cache=False, universe="sp500", progress_callback=record
+    )
+
+    # Quotes count the whole universe; analysis counts the survivors.
+    assert _stages(events) == [
+        ("quotes", 0, 3),
+        ("analysis", 0, 2),
+        ("analysis", 1, 2),
+        ("analysis", 2, 2),
+    ]
+
+
+async def test_cache_hit_reports_quote_progress_over_the_survivors(tmp_path):
+    universe = ["AAA", "BBB", "PENNY"]
+    client = FakeClient(
+        {
+            "AAA": _quote(100.0, 200_000),
+            "BBB": _quote(50.0, 300_000),
+            "PENNY": _quote(5.0, 900_000),
+        }
+    )
+    scanner, _ = _make_scanner(tmp_path, client)
+    await scanner.run_scan(universe, use_cache=True, universe="sp500")
+
+    events, record = _recorder()
+    await scanner.run_scan(
+        universe, use_cache=True, universe="sp500", progress_callback=record
+    )
+
+    assert _stages(events)[0] == ("quotes", 0, 2)
+    assert _stages(events)[1] == ("analysis", 0, 2)
+
+
+async def test_quote_stage_forwards_client_progress(tmp_path):
+    class ReportingClient(FakeClient):
+        async def get_batch_quotes(self, tickers, max_concurrent=10, on_progress=None):
+            await on_progress(1, len(tickers))
+            return await super().get_batch_quotes(tickers)
+
+    client = ReportingClient({"AAA": _quote(100.0, 200_000), "BBB": _quote(50.0, 300_000)})
+    scanner, _ = _make_scanner(tmp_path, client)
+    events, record = _recorder()
+
+    await scanner.run_scan(
+        ["AAA", "BBB"], use_cache=False, universe="sp500", progress_callback=record
+    )
+
+    assert _stages(events)[:2] == [("quotes", 0, 2), ("quotes", 1, 2)]

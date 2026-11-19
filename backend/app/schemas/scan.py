@@ -31,6 +31,7 @@ class ScanProgressEvent(BaseModel):
 
     type: str  # "progress" or "complete"
     scan_id: str
+    stage: Optional[str] = None  # "quotes" or "analysis"
     current: Optional[int] = None
     total: Optional[int] = None
     found: Optional[int] = None

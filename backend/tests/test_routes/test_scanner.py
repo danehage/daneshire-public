@@ -92,6 +92,34 @@ async def test_execute_returns_immediately_and_streams_complete(client):
     assert results.json()["partial"] is False
 
 
+@pytest.mark.asyncio
+async def test_stream_opens_on_the_quote_stage_with_the_universe_size(client):
+    """The bar must not read 0 of 0 before the scanner's first event."""
+
+    class _SilentScanner(_FakeScanner):
+        async def run_scan(self, tickers, **kwargs):
+            return ("scan-x", [])
+
+    fake = _FakeMarket()
+    fake.scanner = _SilentScanner()
+    app.dependency_overrides[get_market] = lambda: fake
+
+    res = await client.post("/api/scan/execute", json={"universe": "sp500_sample"})
+    body = res.json()
+
+    events = []
+    async with client.stream("GET", f"/api/scan/{body['scan_id']}/stream") as stream:
+        async for line in stream.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[len("data: ") :]))
+
+    first = events[0]
+    assert first["type"] == "progress"
+    assert first["stage"] == "quotes"
+    assert first["current"] == 0
+    assert first["total"] == body["universe_size"]
+
+
 def _row(ticker: str, score: int) -> dict:
     """Minimal dict satisfying ScanResultItem's required fields."""
     return {
