@@ -45,6 +45,9 @@ _PAYLOAD_KEYS = (
     "support", "resistance", "ma_slope", "volume", "avg_volume",
     "volume_pace", "volume_pace_reliable", "current_hv", "momentum_10d",
     "pct_above_low",
+    # Quality and value fact columns
+    "fcf_yield_pct", "fcf_margin_pct", "roic_pct", "gross_margin_pct",
+    "gross_margin_change_pts",
 )
 
 

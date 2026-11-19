@@ -82,7 +82,7 @@ Each variant owns its own `.evaluate(observation) -> Outcome` and `.format() -> 
 
 **HV Rank** — historical-volatility-rank proxy. Not implied volatility. UI labels must say "HV Rank", never "IV Rank".
 
-**Fact columns** — since #117 the scanner is a quality-gated research shortlist, not a ranker. Each row shows sortable facts: % off the 52-week high, last earnings reaction vs SPY, last EPS beat/miss, trend vs the 50/200-day MAs, HV Rank, days to next report, sector, market cap. Default sort is **Setup fit** (since 2026-10-15; before that ticker A→Z).
+**Fact columns** — since #117 the scanner is a quality-gated research shortlist, not a ranker. Each row shows sortable facts: % off the 52-week high, last earnings reaction vs SPY, last EPS beat/miss, FCF yield, FCF margin, ROIC, gross margin and its change over the prior four quarters (`services/quality_facts.py`; blank for financials and REITs), trend vs the 50/200-day MAs, HV Rank, days to next report, sector, market cap. Default sort is **Setup fit** (since 2026-10-15; before that ticker A→Z).
 
 **Earnings reaction vs SPY** — signed % move from the close before the last report date to the close of the first session after it, minus SPY over the same two closes. FMP's earnings feed has no before-open/after-close flag, so one window covers both (exact for after-close reporters; one extra session for before-open ones). Empty until that next session closes.
 

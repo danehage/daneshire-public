@@ -31,6 +31,7 @@ from app.services.funnel import (
     passes_quality_gate,
     statement_available_date,
 )
+from app.services.quality_facts import compute_quality_facts
 
 logger = logging.getLogger(__name__)
 
@@ -163,19 +164,23 @@ class ScanQualityGate:
         # Statements filed any time today are public by scan time.
         self._as_of = self._now.astimezone(_ET).date() + timedelta(days=1)
         self._metrics: dict[str, tuple[Optional[QualityMetrics], Optional[str]]] = {}
+        self._facts: dict[str, dict] = {}
         self._fresh: set[str] = set()
         self.available = True
         self.refreshed = 0
         self.refresh_failed = 0
 
-    def _reduce(self, income, balance, cashflow, sector, quote: dict) -> tuple[Optional[QualityMetrics], Optional[str]]:
+    def _reduce(self, ticker: str, income, balance, cashflow, sector, quote: dict) -> None:
         price = float(quote.get("price") or 0)
         mcap = quote.get("marketCap") or None
         m = compute_quality_metrics(
             income, balance, cashflow, self._as_of, price, self._cfg,
             market_cap=float(mcap) if mcap else None,
         )
-        return m, sector
+        self._metrics[ticker] = (m, sector)
+        self._facts[ticker] = compute_quality_facts(
+            income, balance, self._as_of, sector, m, self._cfg
+        )
 
     async def preload(self, quotes: dict[str, dict]) -> None:
         tickers = sorted(quotes)
@@ -187,8 +192,9 @@ class ScanQualityGate:
                         select(FundamentalsSnapshot).where(FundamentalsSnapshot.ticker.in_(chunk))
                     )
                     for snap in res.scalars():
-                        self._metrics[snap.ticker] = self._reduce(
-                            snap.income, snap.balance, snap.cashflow, snap.sector, quotes[snap.ticker]
+                        self._reduce(
+                            snap.ticker, snap.income, snap.balance, snap.cashflow,
+                            snap.sector, quotes[snap.ticker],
                         )
                         if self._now - snap.fetched_at < self._max_age:
                             self._fresh.add(snap.ticker)
@@ -196,6 +202,7 @@ class ScanQualityGate:
             logger.warning(f"Quality gate unavailable, scan rows left unjudged: {e}")
             self.available = False
             self._metrics.clear()
+            self._facts.clear()
             self._fresh.clear()
             return
         logger.info(
@@ -216,8 +223,8 @@ class ScanQualityGate:
                 await session.commit()
         except Exception as e:
             logger.warning(f"Quality gate: could not cache {ticker} fundamentals: {e}")
-        self._metrics[ticker] = self._reduce(
-            data["income"], data["balance"], data["cashflow"], data["sector"], quote
+        self._reduce(
+            ticker, data["income"], data["balance"], data["cashflow"], data["sector"], quote
         )
         self._fresh.add(ticker)
         self.refreshed += 1
@@ -226,6 +233,11 @@ class ScanQualityGate:
         """Sector from the ticker's snapshot (FMP profile), for the scanner's
         sector column (#117). Call after ``evaluate``; None if unknown."""
         return self._metrics.get(ticker, (None, None))[1]
+
+    def facts(self, ticker: str) -> dict:
+        """Quality and value fact columns for the row. Call after
+        ``evaluate``; empty if the ticker has no snapshot."""
+        return self._facts.get(ticker, {})
 
     async def evaluate(self, result: dict) -> tuple[Optional[bool], list[str]]:
         """(passed, failure reasons) for one scored scan row. ``passed`` is

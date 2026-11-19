@@ -177,6 +177,42 @@ async def test_first_scan_fetches_and_caches_then_reuses_for_a_week(factory):
     assert fmp.calls == 8 and gate.refreshed == 1
 
 
+async def test_fact_columns_match_on_the_refresh_and_cached_paths(factory):
+    inc, bal, cf = make_statements()
+    for q in inc:
+        q["grossProfit"] = 4e8
+    fmp = FakeFMP({"ZQG1": ("Industrials", (inc, bal, cf))})
+    quotes = {"ZQG1": {"price": PRICE, "marketCap": 1e10}}
+
+    fetched = ScanQualityGate(factory, fmp, now=NOW)
+    await fetched.preload(quotes)
+    await fetched.evaluate(_row("ZQG1"))
+    assert fetched.refreshed == 1
+    assert fetched.facts("ZQG1")["fcf_yield_pct"] == 4.8  # 480M / 10B
+    assert fetched.facts("ZQG1")["gross_margin_pct"] > 40
+
+    cached = ScanQualityGate(factory, fmp, now=NOW + timedelta(days=1))
+    await cached.preload(quotes)
+    await cached.evaluate(_row("ZQG1"))
+    assert cached.refreshed == 0
+    assert cached.facts("ZQG1") == fetched.facts("ZQG1")
+
+
+async def test_fact_columns_never_change_the_verdict(factory):
+    """A gross loss and no ROIC inputs: poor facts, and the gate doesn't care."""
+    inc, bal, cf = make_statements()
+    for q in inc:
+        q["grossProfit"] = -1e8
+    assert await _judge(factory, "Industrials", (inc, bal, cf)) == (True, [])
+
+
+async def test_fact_columns_are_empty_without_a_snapshot(factory):
+    gate = ScanQualityGate(factory, FakeFMP({}), now=NOW)
+    await gate.preload({"ZQG1": {"price": PRICE, "marketCap": 1e10}})
+    await gate.evaluate(_row("ZQG1"))
+    assert gate.facts("ZQG1") == {}
+
+
 async def test_stale_snapshot_is_used_when_refetch_fails(factory):
     fmp = FakeFMP({"ZQG1": ("Industrials", make_statements())})
     quotes = {"ZQG1": {"price": PRICE, "marketCap": 1e10}}
@@ -236,6 +272,9 @@ async def test_scan_rows_carry_the_verdict(tmp_path, factory):
     # #117: the sector column comes from the same snapshot, no extra call.
     sectors = {r["ticker"]: r["sector"] for r in results}
     assert sectors == {"ZQG1": "Industrials", "ZQG2": "Industrials", "ZQG3": None}
+    # So do the quality and value facts, on failing rows too.
+    yields = {r["ticker"]: r.get("fcf_yield_pct") for r in results}
+    assert yields == {"ZQG1": 4.8, "ZQG2": 4.8, "ZQG3": None}
 
 
 async def test_forward_record_skips_gate_failures(db_session):
@@ -245,7 +284,7 @@ async def test_forward_record_skips_gate_failures(db_session):
     scan_id = str(uuid.uuid4())
     results = [
         _row("ZQG1", score=90) | {"quality_pass": False, "quality_fails": ["leverage"]},
-        _row("ZQG2", score=80) | {"quality_pass": True, "quality_fails": []},
+        _row("ZQG2", score=80) | {"quality_pass": True, "quality_fails": [], "roic_pct": 12.5},
         _row("ZQG3", score=70) | {"quality_pass": None, "quality_fails": []},
     ]
     try:
@@ -255,6 +294,7 @@ async def test_forward_record_skips_gate_failures(db_session):
         )).scalars().all()
         assert [(r.ticker, r.rank) for r in rows] == [("ZQG2", 1), ("ZQG3", 2)]
         assert rows[0].payload["quality_pass"] is True
+        assert rows[0].payload["roic_pct"] == 12.5  # saved scans keep the facts
     finally:
         await db_session.execute(delete(ScanPick).where(ScanPick.scan_id == uuid.UUID(scan_id)))
         await db_session.commit()

@@ -456,7 +456,7 @@ Secure these with a shared secret header (`X-Scheduler-Secret`) so they can't be
 
 ### Scanner
 - Universe selector, filters, execute button. Default universe `combined` = FMP company screener, US-listed ≥ $2B, liquid, rebuilt weekly (#118; rules in CONTEXT.md § Scan universe), with the static S&P 500 + 400 as fallback; the page notes that the quality gate's backtest evidence covers the S&P 500 only
-- Results table with "Add to watchlist" button per row. Default sort is Setup fit (Dane's four setup traits, 0–4; see CONTEXT.md). Sortable fact columns (#117): % off 52w high, earnings reaction vs SPY, last EPS beat/miss, trend vs 50/200-day MA, HV Rank, days to next report, sector, market cap, plus the legacy score until ~2027-01-10. Quality-gate failures hidden by default (#116)
+- Results table with "Add to watchlist" button per row. Default sort is Setup fit (Dane's four setup traits, 0–4; see CONTEXT.md). Sortable fact columns (#117): % off 52w high, earnings reaction vs SPY, last EPS beat/miss, FCF yield, FCF margin, ROIC, gross margin and its change, trend vs 50/200-day MA, HV Rank, days to next report, sector, market cap, plus the legacy score until ~2027-01-10. Quality-gate failures hidden by default (#116)
 - Historical scans dropdown
 
 ### Ticker Detail (click any ticker anywhere)

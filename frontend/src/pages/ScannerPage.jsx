@@ -136,9 +136,9 @@ function GateFailures({ fails }) {
 // each column is a fact Dane can sort on. The legacy composite score stays
 // as the last column for one quarter (remove ~2027-01-10); it is never the
 // default sort.
-function signedPct(v, digits = 1) {
+function signedPct(v, digits = 1, unit = "%") {
   if (v == null) return null;
-  return `${v > 0 ? "+" : ""}${v.toFixed(digits)}%`;
+  return `${v > 0 ? "+" : ""}${v.toFixed(digits)}${unit}`;
 }
 
 function trendRank(r) {
@@ -256,6 +256,44 @@ const COLUMNS = [
     title: "Last reported EPS vs the consensus estimate",
   },
   {
+    key: "fcf_yield_pct",
+    label: "FCF Yield",
+    dir: "desc",
+    get: (r) => r.fcf_yield_pct,
+    title:
+      "Trailing 12-month free cash flow / market cap. Blank for financials and REITs",
+  },
+  {
+    key: "fcf_margin_pct",
+    label: "FCF Margin",
+    dir: "desc",
+    get: (r) => r.fcf_margin_pct,
+    title:
+      "Trailing 12-month free cash flow / revenue. Blank for financials and REITs",
+  },
+  {
+    key: "roic_pct",
+    label: "ROIC",
+    dir: "desc",
+    get: (r) => r.roic_pct,
+    title:
+      "Trailing 12-month operating income after tax / (debt + equity - cash). Blank for financials and REITs, a pre-tax loss, or invested capital at or below zero",
+  },
+  {
+    key: "gross_margin_pct",
+    label: "Gross Margin",
+    dir: "desc",
+    get: (r) => r.gross_margin_pct,
+    title: "Trailing 12-month gross profit / revenue. Blank for financials and REITs",
+  },
+  {
+    key: "gross_margin_change_pts",
+    label: "GM Chg",
+    dir: "desc",
+    get: (r) => r.gross_margin_change_pts,
+    title: "Gross margin vs the prior four quarters, in percentage points",
+  },
+  {
     key: "trend",
     label: "Trend",
     dir: "desc",
@@ -329,12 +367,12 @@ function SortHeader({ column, sort, onSort }) {
   );
 }
 
-function Pct({ value, title }) {
+function Pct({ value, title, unit }) {
   if (value == null) return <span className="text-light-brown">—</span>;
   const color = value > 0 ? "text-gain" : value < 0 ? "text-loss" : "text-ink";
   return (
     <span className={`font-mono ${color}`} title={title}>
-      {signedPct(value)}
+      {signedPct(value, 1, unit)}
     </span>
   );
 }
@@ -425,6 +463,21 @@ function ResultRow({ result, onAddToWatchlist, isAdding, onDecide }) {
         </td>
         <td className="py-3 px-3 text-sm">
           <EpsCell result={result} />
+        </td>
+        <td className="py-3 px-3 text-sm">
+          <Pct value={result.fcf_yield_pct} />
+        </td>
+        <td className="py-3 px-3 text-sm">
+          <Pct value={result.fcf_margin_pct} />
+        </td>
+        <td className="py-3 px-3 text-sm">
+          <Pct value={result.roic_pct} />
+        </td>
+        <td className="py-3 px-3 text-sm">
+          <Pct value={result.gross_margin_pct} />
+        </td>
+        <td className="py-3 px-3 text-sm whitespace-nowrap">
+          <Pct value={result.gross_margin_change_pts} unit=" pts" />
         </td>
         <td className="py-3 px-3 text-sm font-mono whitespace-nowrap space-x-2">
           <MaMark label="50" dist={result.dist_50} />

@@ -94,6 +94,13 @@ class ScanResultItem(BaseModel):
     eps_surprise_pct: Optional[float] = None  # > 0 beat, < 0 miss
     earnings_reaction_pct: Optional[float] = None  # signed move around last report
     earnings_reaction_vs_spy: Optional[float] = None  # same, minus SPY's move
+    # Quality and value facts, from the gate's statements. None for financials
+    # and REITs, where they don't apply.
+    fcf_yield_pct: Optional[float] = None  # TTM FCF / market cap
+    fcf_margin_pct: Optional[float] = None  # TTM FCF / revenue
+    roic_pct: Optional[float] = None  # after-tax operating income / invested capital
+    gross_margin_pct: Optional[float] = None  # TTM
+    gross_margin_change_pts: Optional[float] = None  # vs the prior 4 quarters
     score: int  # legacy score
     signals: list[str]
 

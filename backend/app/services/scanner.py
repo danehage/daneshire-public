@@ -613,6 +613,7 @@ class StockScanner:
                             result["quality_pass"] = passed
                             result["quality_fails"] = fails
                             result["sector"] = quality_gate.sector(ticker)
+                            result.update(quality_gate.facts(ticker))
                         results.append(result)
                     else:
                         errors += 1  # Track when we can't process a ticker
