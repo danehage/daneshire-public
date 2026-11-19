@@ -1,5 +1,7 @@
 # Daneshire Hathaway
 
+> **Public showcase mirror** — scrubbed full-history copy of my private repository (live deployment triggers, personal config, and automated agent routines remain on the private upstream).
+
 Stock research terminal for swing trading and options strategies. Single-user app with watchlist management, trade journaling, quantitative scanner, and price alerts with push notifications.
 
 **Deployment:** Hosted privately on GCP Cloud Run behind HTTP Basic Auth.
@@ -169,9 +171,7 @@ daneshire/
 ├── DEPLOY.md                 # Deployment guide
 ├── ARCHITECTURE.md           # Database schema & API design
 ├── CONTEXT.md                # Domain glossary
-├── PRINCIPLES.md             # Investment analysis lens
-├── TODO.md                   # Current status + latest session log
-└── TODO_ARCHIVE.md           # Past session logs
+└── PRINCIPLES.md             # Investment analysis lens
 ```
 
 ## API Endpoints
