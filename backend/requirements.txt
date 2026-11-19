@@ -39,3 +39,8 @@ python-multipart>=0.0.9
 
 # GCS backup
 google-cloud-storage>=2.14.0
+
+# Security floors for transitive deps; pip-compile keeps existing lock pins
+# otherwise. Fixes PYSEC-2026-4320 (certifi) and CVE-2026-119194..7 (pyasn1).
+certifi>=2026.10.18
+pyasn1>=0.6.5
