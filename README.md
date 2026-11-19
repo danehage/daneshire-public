@@ -2,7 +2,7 @@
 
 Stock research terminal for swing trading and options strategies. Single-user app with watchlist management, trade journaling, quantitative scanner, and price alerts with push notifications.
 
-**Live:** https://your-service.us-central1.run.app (HTTP Basic Auth required)
+**Deployment:** Hosted privately on GCP Cloud Run behind HTTP Basic Auth.
 
 Two auth roles: the **owner** credentials unlock everything; optional **guest** credentials (`GUEST_USERNAME`/`GUEST_PASSWORD`) get read-only access to the scanner, earnings calendar, and ticker context — portfolio, watchlist, journal, trades, and alerts stay owner-only.
 
@@ -20,6 +20,12 @@ Two auth roles: the **owner** credentials unlock everything; optional **guest** 
 - **Alerts** — Price and technical condition alerts with Pushover notifications
 - **Alert Engine** — Cloud Scheduler jobs: price/technical checks every 15 min, hourly sell-side plateau grading, daily earnings and reminder runs
 - **Backups** — nightly `pg_dump` of the production database to GCS
+
+## Engineering Highlights
+
+- **Zero-downtime Cloud Build pipeline (`cloudbuild.yaml`)** — Builds a multi-stage Docker image (hash-pinned Python deps, unprivileged `app` user), runs the full ~550-test `pytest` suite against a parallel throwaway Postgres 16 container, applies Alembic migrations, deploys a zero-traffic `candidate` Cloud Run revision, smoke-tests `/api/health` and `/api/health/db`, and promotes traffic only when healthy.
+- **Least-privilege GCP runtime** — Dedicated Cloud Run runtime service account scoped to Secret Manager reads and write-only GCS backup uploads (`storage.objectCreator`, cannot overwrite or delete backups).
+- **Automated quality & security checks** — GitHub Actions CI (`.github/workflows/ci.yml`) runs backend tests against Postgres 16, frontend builds, and `pip-audit`/`npm audit` sweeps, alongside documented ADRs (`docs/adr/`) and repo-scoped Claude Code review workflows.
 
 ## Tech Stack
 
@@ -125,7 +131,7 @@ pytest tests/ -v
 
 ## Production Deployment
 
-**Push to `master` to deploy.** A Cloud Build trigger runs [`cloudbuild.yaml`](cloudbuild.yaml), which builds the image, applies Alembic migrations, and deploys to Cloud Run. The deploy step pins the dedicated runtime service account and the full Secret Manager `--set-secrets` list. Don't hand-run `gcloud run deploy`: it would drop that configuration.
+**Push to `master` to deploy.** A Cloud Build trigger runs [`cloudbuild.yaml`](cloudbuild.yaml), which builds the image, runs the full backend test suite against a throwaway Postgres 16 container, applies Alembic migrations, deploys a zero-traffic `candidate` revision to Cloud Run, smoke-tests health endpoints, and promotes traffic. The deploy step pins the dedicated runtime service account and the full Secret Manager `--set-secrets` list. Don't hand-run `gcloud run deploy`: it would drop that configuration.
 
 See [DEPLOY.md](DEPLOY.md) for first-time GCP setup (secrets, service accounts, Cloud Scheduler jobs).
 
@@ -232,4 +238,4 @@ Notifications are sent via Pushover with priority levels (low, normal, high, urg
 
 ## License
 
-Private project.
+MIT — see [LICENSE](LICENSE).
